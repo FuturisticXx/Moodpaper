@@ -30,11 +30,11 @@ Your photos, Moods, preferences, history, and diagnostics stay on your Mac. Mood
 
 ## Install
 
-1. Download the latest notarized `Moodpaper-<version>.dmg` from the repository's Releases page.
+1. Download the latest notarized DMG from the [GitHub Releases page](https://github.com/FuturisticXx/Moodpaper/releases/latest), or download [Moodpaper-1.0.0.dmg](https://github.com/FuturisticXx/Moodpaper/releases/download/v1.0.0/Moodpaper-1.0.0.dmg) directly.
 2. Open the disk image and drag Moodpaper into Applications.
 3. Open Moodpaper. The signed and notarized release should pass Gatekeeper without a security bypass.
 
-The first public GitHub release has not been published yet. The current local release candidate is `Moodpaper-1.0.0.dmg`.
+The v1.0.0 checksum is published alongside the DMG as [Moodpaper-1.0.0.dmg.sha256](https://github.com/FuturisticXx/Moodpaper/releases/download/v1.0.0/Moodpaper-1.0.0.dmg.sha256).
 
 ## Development
 
@@ -85,7 +85,7 @@ MoodPaper/
 
 ## Contributing
 
-Issues and focused pull requests are welcome after the public repository is available. Keep changes small, preserve the native macOS experience, and include tests or verification evidence for behavior changes.
+Issues and focused pull requests are welcome. Keep changes small, preserve the native macOS experience, and include tests or verification evidence for behavior changes.
 
 ## Support
 
