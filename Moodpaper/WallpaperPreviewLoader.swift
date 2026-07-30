@@ -36,7 +36,7 @@ final class WallpaperPreviewLoader {
         liveURL: URL?,
         fallbackURL: URL?,
         authoritativeURL: URL? = nil,
-        isReadable: (URL) -> Bool = { FileManager.default.isReadableFile(atPath: $0.path) }
+        isReadable: (URL) -> Bool = WallpaperPreviewLoader.isReadablePreviewFile
     ) -> URL? {
         // A wallpaper Horizon just applied itself is authoritative: it outranks
         // the live-desktop read, which NSWorkspace can briefly report stale right
@@ -51,6 +51,15 @@ final class WallpaperPreviewLoader {
             return fallbackURL
         }
         return nil
+    }
+
+    nonisolated static func isReadablePreviewFile(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return false
+        }
+        return FileManager.default.isReadableFile(atPath: url.path)
     }
 
     func loadImage(from url: URL, maxPixelSize: CGFloat = 1200, completion: @escaping (NSImage?) -> Void) {
@@ -127,7 +136,7 @@ final class WallpaperPreviewLoader {
     }
 
     private func makeThumbnail(for url: URL, maxPixelSize: CGFloat) -> NSImage? {
-        guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
+        guard Self.isReadablePreviewFile(url) else { return nil }
 
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,

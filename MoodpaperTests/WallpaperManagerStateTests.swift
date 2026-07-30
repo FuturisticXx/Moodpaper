@@ -240,6 +240,27 @@ final class WallpaperManagerStateTests: XCTestCase {
         XCTAssertEqual(selected, liveURL)
     }
 
+    func testPreviewURLIgnoresReadableDirectoryMasqueradingAsImage() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let liveDirectory = temporaryDirectory
+            .appendingPathComponent("Wallpaper Shuffle--1784248599-0.jpg", isDirectory: true)
+        let fallbackURL = temporaryDirectory
+            .appendingPathComponent("fallback.jpg")
+        try FileManager.default.createDirectory(at: liveDirectory, withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: fallbackURL.path, contents: Data("fallback".utf8)))
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+
+        let selected = WallpaperPreviewLoader.preferredPreviewURL(
+            liveURL: liveDirectory,
+            fallbackURL: fallbackURL
+        )
+
+        XCTAssertEqual(selected, fallbackURL)
+    }
+
     func testPreparedWallpaperBaseIdentifierStripsFingerprintAcrossSandboxPaths() {
         let containerURL = URL(fileURLWithPath: "/Users/example/Library/Containers/com.2DaMax.Moodpaper/Data/Library/Application Support/Moodpaper/PreparedWallpapers/mood-natural-5--1778450544-925495.jpg")
         let unsandboxedURL = URL(fileURLWithPath: "/Users/example/Library/Application Support/Moodpaper/PreparedWallpapers/evening-5--1778908796-1040417.jpg")
