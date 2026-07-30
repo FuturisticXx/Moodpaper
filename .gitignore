@@ -1,0 +1,46 @@
+# Xcode
+.DS_Store
+._*
+build/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.xcuserstate
+.derivedData/
+.derivedDataLocal/
+*.profraw
+
+# Local agent/worktree state
+.codex/
+.claude/worktrees/
+.superpowers/
+.netlify/
+
+# Python cache output
+__pycache__/
+*.pyc
+
+# Temporary wallpaper downloads
+wallpapers-temp/
+
+# Generated dependencies and historical launch assets
+node_modules/
+horizon-design-mcp/
+WallpapersStaging*/
+app-store-assets/
+
+# API Keys (never commit)
+.env
+*.key
+enho.env
