@@ -8,15 +8,16 @@ Moodpaper is a direct download, not a Mac App Store product. It has no account, 
 
 ## Features
 
-- **Your photos:** Import local images into the active Mood. Moodpaper copies them into its sandboxed Application Support folder.
+- **Your photos:** Import individual images, drag in files, or load an entire folder into a Mood. Moodpaper copies supported images into its sandboxed Application Support folder.
 - **Nine time slots:** Deep Night, Dawn, Sunrise, Morning, Midday, Afternoon, Golden Hour, Dusk, and Evening.
-- **Named Moods:** Create, rename, duplicate, delete, activate, and customize complete sets of time-slot assignments.
+- **All Day wallpaper pool:** Give each Mood one shared pool that works immediately across the whole day, then add time-specific favorites whenever you want.
+- **Named Moods:** Create, rename, duplicate, delete, activate, and customize complete wallpaper collections. New Moods flow directly into wallpaper import.
 - **Automatic scheduling:** Move through the day using configurable time slots and local sunrise and sunset timing.
-- **Safe empty slots:** If the current Mood has no image for a time slot, Moodpaper holds the wallpaper already on screen.
+- **Safe empty slots:** A time slot uses its own images when available, falls back to the Mood's All Day pool, and holds the current wallpaper only when both are empty.
 - **Weather display:** Show local weather in the dashboard without letting weather choose your wallpaper.
 - **Focus Mode:** Optionally use calendar access to apply your Focus wallpapers during meetings.
 - **Multiple displays and Spaces:** Keep wallpaper behavior consistent across connected displays and macOS Spaces.
-- **Local history and controls:** Review recent changes, pause rotation, and use keyboard shortcuts.
+- **Local history and controls:** Review recent changes, pause rotation, and use keyboard shortcuts. Skip shows a transition state and updates the cards only after macOS confirms the connected displays.
 
 ## Privacy
 

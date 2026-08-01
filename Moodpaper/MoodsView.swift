@@ -2,14 +2,16 @@ import SwiftUI
 
 // MARK: - Moods section
 
-// The Moodpaper switcher: every Mood is a named set of per-slot wallpaper
+// The Moodpaper switcher: every Mood is a named set of wallpaper
 // assignments, and this grid is where the user creates, renames, duplicates,
-// deletes, and activates them. Assignments themselves are edited in the
-// Library (per-slot import), so this screen stays a lightweight switcher.
+// deletes, and activates them. All Day provides the simple shared pool, while
+// the Library offers optional per-slot overrides.
 struct MoodsView: View {
     @ObservedObject private var store = MoodStore.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingCreateSheet = false
     @State private var editingMood: Mood? = nil
+    @State private var importRequest: MoodImportRequest?
 
     var body: some View {
         ScrollView {
@@ -45,16 +47,25 @@ struct MoodsView: View {
                             mood: mood,
                             isActive: store.activeMoodID == mood.id,
                             onActivate: {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
                                     store.activate(mood)
                                 }
+                            },
+                            onAddWallpapers: {
+                                importRequest = MoodImportRequest(mood: mood, initialPicker: nil)
+                            },
+                            onChooseFolder: {
+                                importRequest = MoodImportRequest(mood: mood, initialPicker: .folder)
+                            },
+                            onChoosePhotos: {
+                                importRequest = MoodImportRequest(mood: mood, initialPicker: .photos)
                             },
                             onEdit: { editingMood = mood }
                         )
                     }
                 }
 
-                Text("Fill each Mood's time slots from the Library. A slot with no images simply holds the current wallpaper.")
+                Text("All Day wallpapers make setup simple. Add time-slot favorites from the Library whenever you want.")
                     .font(HorizonTypography.caption)
                     .foregroundColor(HorizonColors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -68,7 +79,20 @@ struct MoodsView: View {
         .sheet(item: $editingMood) { mood in
             MoodEditorSheet(mode: .edit(mood))
         }
+        .sheet(item: $importRequest) { request in
+            MoodWallpaperImportView(
+                mood: request.mood,
+                mode: .adding,
+                initialPicker: request.initialPicker
+            )
+        }
     }
+}
+
+private struct MoodImportRequest: Identifiable {
+    let id = UUID()
+    let mood: Mood
+    let initialPicker: MoodWallpaperImportView.Picker?
 }
 
 // MARK: - Mood card
@@ -77,6 +101,9 @@ struct MoodCard: View {
     let mood: Mood
     let isActive: Bool
     let onActivate: () -> Void
+    let onAddWallpapers: () -> Void
+    let onChooseFolder: () -> Void
+    let onChoosePhotos: () -> Void
     let onEdit: () -> Void
 
     @ObservedObject private var store = MoodStore.shared
@@ -85,7 +112,7 @@ struct MoodCard: View {
     private var wallpaperCount: Int { store.totalWallpaperCount(in: mood) }
 
     var body: some View {
-        Button(action: onActivate) {
+        Button(action: wallpaperCount == 0 ? onAddWallpapers : onActivate) {
             VStack(alignment: .leading, spacing: HorizonSpacing.sm) {
                 HStack(alignment: .top) {
                     ZStack {
@@ -97,6 +124,22 @@ struct MoodCard: View {
                             .foregroundColor(HorizonColors.secondaryAccent)
                     }
                     Spacer()
+                    if wallpaperCount > 0 {
+                        Menu {
+                            Button("Choose Folder", systemImage: "folder.fill", action: onChooseFolder)
+                            Button("Choose Photos", systemImage: "photo.on.rectangle.angled", action: onChoosePhotos)
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(HorizonColors.textSecondary)
+                                .padding(6)
+                                .background(Circle().fill(HorizonColors.glassFill))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .help("Add wallpapers")
+                        .accessibilityLabel("Add wallpapers to \(mood.name)")
+                    }
                     Button(action: onEdit) {
                         Image(systemName: "slider.horizontal.3")
                             .font(.system(size: 13, weight: .semibold))
@@ -116,15 +159,21 @@ struct MoodCard: View {
                     .foregroundColor(HorizonColors.textPrimary)
                     .lineLimit(1)
 
-                Text("\(wallpaperCount) wallpaper\(wallpaperCount == 1 ? "" : "s")")
-                    .font(HorizonTypography.caption)
-                    .foregroundColor(HorizonColors.textSecondary)
+                if wallpaperCount == 0 {
+                    Label("Add Wallpapers", systemImage: "plus.circle.fill")
+                        .font(HorizonTypography.callout)
+                        .foregroundColor(HorizonColors.secondaryAccent)
+                } else {
+                    Text("\(wallpaperCount) wallpaper\(wallpaperCount == 1 ? "" : "s")")
+                        .font(HorizonTypography.caption)
+                        .foregroundColor(HorizonColors.textSecondary)
+                }
 
                 HStack(spacing: 4) {
                     Circle()
                         .fill(isActive ? Color.green : HorizonColors.textTertiary.opacity(0.4))
                         .frame(width: 6, height: 6)
-                    Text(isActive ? "Active" : "Tap to activate")
+                    Text(isActive ? "Active" : (wallpaperCount == 0 ? "Ready for your favorites" : "Tap to activate"))
                         .font(HorizonTypography.caption)
                         .foregroundColor(isActive ? .green : HorizonColors.textTertiary)
                 }
@@ -147,7 +196,7 @@ struct MoodCard: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(mood.name), \(isActive ? "active" : "inactive")")
+        .accessibilityLabel("\(mood.name), \(isActive ? "active" : "inactive"), \(wallpaperCount == 0 ? "add wallpapers" : "\(wallpaperCount) wallpapers")")
     }
 }
 
@@ -165,6 +214,7 @@ struct MoodEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name: String = ""
     @State private var showingDeleteConfirm = false
+    @State private var createdMood: Mood?
 
     private var editingMood: Mood? {
         if case .edit(let mood) = mode { return mood }
@@ -178,8 +228,35 @@ struct MoodEditorSheet: View {
     }
 
     var body: some View {
+        Group {
+            if let createdMood {
+                MoodWallpaperImportView(mood: createdMood, mode: .creation)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            } else {
+                editorContent
+            }
+        }
+        .onAppear {
+            if let mood = editingMood {
+                name = mood.name
+            }
+        }
+        .alert("Delete this Mood?", isPresented: $showingDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                if let mood = editingMood {
+                    store.delete(mood)
+                }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its imported wallpapers are removed with it. This cannot be undone.")
+        }
+    }
+
+    private var editorContent: some View {
         VStack(alignment: .leading, spacing: HorizonSpacing.lg) {
-            Text(isCreate ? "New Mood" : "Edit Mood")
+            Text(isCreate ? "Name Your Mood" : "Edit Mood")
                 .font(HorizonTypography.title3)
                 .foregroundColor(HorizonColors.textPrimary)
 
@@ -212,10 +289,10 @@ struct MoodEditorSheet: View {
                 Button(isCreate ? "Create" : "Save") {
                     if let mood = editingMood {
                         store.rename(mood, to: trimmedName)
+                        dismiss()
                     } else {
-                        store.create(name: trimmedName)
+                        createdMood = store.create(name: trimmedName)
                     }
-                    dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
@@ -225,21 +302,5 @@ struct MoodEditorSheet: View {
         }
         .padding(HorizonSpacing.xl)
         .frame(width: 380, height: 260)
-        .onAppear {
-            if let mood = editingMood {
-                name = mood.name
-            }
-        }
-        .alert("Delete this Mood?", isPresented: $showingDeleteConfirm) {
-            Button("Delete", role: .destructive) {
-                if let mood = editingMood {
-                    store.delete(mood)
-                }
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Its imported wallpapers are removed with it. This cannot be undone.")
-        }
     }
 }

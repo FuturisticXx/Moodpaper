@@ -482,6 +482,84 @@ final class WallpaperManagerStateTests: XCTestCase {
         )
     }
 
+    // MARK: - Desktop apply confirmation
+
+    func testDesktopApplyConfirmationCheckpointsBackOffInsteadOfPollingEveryHundredMilliseconds() {
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationCheckpoints(timeout: 20),
+            [0.5, 1.5, 3, 5, 7, 9, 12, 16, 20]
+        )
+    }
+
+    func testDesktopApplyConfirmationCheckpointsRespectShortTimeout() {
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationCheckpoints(timeout: 0.25),
+            [0.25]
+        )
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationCheckpoints(timeout: 0),
+            []
+        )
+    }
+
+    func testDesktopApplyConfirmationWaitsForEveryDisplay() {
+        let displayOne = URL(fileURLWithPath: "/tmp/display-one.jpg")
+        let displayTwo = URL(fileURLWithPath: "/tmp/display-two.jpg")
+
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationDecision(
+                expectedURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": displayTwo
+                ],
+                liveURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": URL(fileURLWithPath: "/tmp/previous.jpg")
+                ],
+                elapsed: 0.5,
+                timeout: 12
+            ),
+            .waiting
+        )
+    }
+
+    func testDesktopApplyConfirmationCompletesWhenEveryDisplayMatches() {
+        let displayOne = URL(fileURLWithPath: "/tmp/display-one.jpg")
+        let displayTwo = URL(fileURLWithPath: "/tmp/display-two.jpg")
+
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationDecision(
+                expectedURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": displayTwo
+                ],
+                liveURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": displayTwo
+                ],
+                elapsed: 0.5,
+                timeout: 12
+            ),
+            .confirmed
+        )
+    }
+
+    func testDesktopApplyConfirmationStopsWaitingAtTimeout() {
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationDecision(
+                expectedURLsByScreen: [
+                    "Display 1": URL(fileURLWithPath: "/tmp/next.jpg")
+                ],
+                liveURLsByScreen: [
+                    "Display 1": URL(fileURLWithPath: "/tmp/previous.jpg")
+                ],
+                elapsed: 12,
+                timeout: 12
+            ),
+            .timedOut
+        )
+    }
+
     // MARK: - Post-skip lastSlot bookkeeping
 
     func testSkipRecordsWallClockSlotNotSelectionPool() {

@@ -590,7 +590,6 @@ private struct CurrentWallpaperCard: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject private var moodStore = MoodStore.shared
     @State private var isHovered = false
-    @State private var isSkipping = false
     @State private var hostingScreen: NSScreen?
     @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation: Bool = false
     @State private var showingUnpinAlert = false
@@ -704,25 +703,26 @@ private struct CurrentWallpaperCard: View {
 
                     Spacer()
 
-                    Button(action: {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            isSkipping = true
-                        }
-
+                    Button {
                         wallpaperManager.skipToNext()
-                        if !wallpaperManager.isChangingWallpaper {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                isSkipping = false
+                    } label: {
+                        HStack(spacing: 5) {
+                            if wallpaperManager.isChangingWallpaper {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(.white)
+                                    .accessibilityHidden(true)
+                                Text("Changing…")
+                                    .font(.system(size: 12, weight: .semibold))
+                            } else {
+                                Image(systemName: "forward.fill")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("Skip")
+                                    .font(.system(size: 12, weight: .semibold))
                             }
                         }
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "forward.fill")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text("Skip")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
                         .foregroundColor(.white)
+                        .frame(minWidth: 62)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(
@@ -737,9 +737,17 @@ private struct CurrentWallpaperCard: View {
                         .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Skip to next wallpaper")
-                    .scaleEffect(isSkipping ? 0.9 : 1.0)
-                    .opacity(isSkipping ? 0.6 : 1.0)
+                    .disabled(wallpaperManager.isChangingWallpaper)
+                    .accessibilityLabel(
+                        wallpaperManager.isChangingWallpaper
+                            ? "Changing wallpaper"
+                            : "Skip to next wallpaper"
+                    )
+                    .help(
+                        wallpaperManager.isChangingWallpaper
+                            ? "Changing wallpaper"
+                            : "Skip to next wallpaper"
+                    )
                     .padding(10)
                 }
 
@@ -784,12 +792,6 @@ private struct CurrentWallpaperCard: View {
         }
         .onChange(of: hostingScreen?.localizedName) { _, _ in
             deferWallpaperPreviewRefresh()
-        }
-        .onChange(of: wallpaperManager.isChangingWallpaper) { _, isChanging in
-            guard !isChanging else { return }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                isSkipping = false
-            }
         }
         .onAppear {
             deferWallpaperSyncAndPreviewRefresh()

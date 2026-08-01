@@ -32,6 +32,22 @@ final class MoodStoreTests: XCTestCase {
         MoodStore(baseURL: baseURL, defaults: defaults)
     }
 
+    private func writeTestImage(to url: URL, color: CGColor = CGColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1)) throws {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        context.setFillColor(color)
+        context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        let image = try XCTUnwrap(context.makeImage())
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.png.identifier as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+    }
+
     // MARK: First run
 
     func testFirstRunCreatesAndActivatesStarterMood() {
@@ -185,6 +201,68 @@ final class MoodStoreTests: XCTestCase {
         // Copy-on-import: deleting the source must not affect the mood.
         try FileManager.default.removeItem(at: sourceURL)
         XCTAssertEqual(store.wallpaperCount(for: .evening, in: mood), 1)
+    }
+
+    func testEffectiveWallpapersFallsBackToAllDayPoolForEmptySlot() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.moods.first)
+        let allDayFolder = store.allDayFolderURL(in: mood)
+        let allDayImage = allDayFolder.appendingPathComponent("shared.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: allDayImage)
+
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .morning, in: mood).map(\.lastPathComponent),
+            [allDayImage.lastPathComponent]
+        )
+    }
+
+    func testEffectiveWallpapersPrefersSlotSpecificPoolOverAllDayPool() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.moods.first)
+        let allDayImage = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: allDayImage)
+        let morningImage = store.folderURL(for: .morning, in: mood).appendingPathComponent("morning.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: morningImage)
+
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .morning, in: mood).map(\.lastPathComponent),
+            [morningImage.lastPathComponent]
+        )
+    }
+
+    func testImportAllDayFolderRecursivelyImportsImagesAndIgnoresOtherFiles() async throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.moods.first)
+        let sourceFolder = baseURL.appendingPathComponent("Wallpaper Folder")
+        let nestedFolder = sourceFolder.appendingPathComponent("Favorites")
+        try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
+        try writeTestImage(to: sourceFolder.appendingPathComponent("lake.png"))
+        try writeTestImage(to: nestedFolder.appendingPathComponent("forest.png"))
+        try Data("notes".utf8).write(to: sourceFolder.appendingPathComponent("notes.txt"))
+
+        let summary = try await store.importAllDayWallpapers(from: [sourceFolder], in: mood)
+
+        XCTAssertEqual(summary.discoveredCount, 2)
+        XCTAssertEqual(summary.importedCount, 2)
+        XCTAssertEqual(summary.failedCount, 0)
+        XCTAssertEqual(store.allDayWallpapers(in: mood).count, 2)
+        XCTAssertEqual(store.totalWallpaperCount(in: mood), 2)
+    }
+
+    func testImportAllDayKeepsSuccessfulImagesWhenAnotherImageFails() async throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.moods.first)
+        let sourceFolder = baseURL.appendingPathComponent("Mixed Wallpapers")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try writeTestImage(to: sourceFolder.appendingPathComponent("good.png"))
+        try Data("not an image".utf8).write(to: sourceFolder.appendingPathComponent("broken.jpg"))
+
+        let summary = try await store.importAllDayWallpapers(from: [sourceFolder], in: mood)
+
+        XCTAssertEqual(summary.discoveredCount, 2)
+        XCTAssertEqual(summary.importedCount, 1)
+        XCTAssertEqual(summary.failedCount, 1)
+        XCTAssertEqual(store.allDayWallpapers(in: mood).count, 1)
     }
 
     // MARK: Mood switch refresh hook
