@@ -78,6 +78,42 @@ final class MoodStore: ObservableObject {
 
     // MARK: - Read helpers
 
+    /// The library root (the folder containing `Moods/`). Sandboxed and
+    /// non-sandboxed builds resolve this to different places, which is what
+    /// `LegacyLibraryMigration` exists to bridge.
+    var storageRootURL: URL {
+        moodsRootURL.deletingLastPathComponent()
+    }
+
+    /// True when the catalog holds no images at all — either no Vibes, or
+    /// only empty ones. Both are states a fresh sandbox container lands in
+    /// when the user's real library was written by a non-sandboxed build.
+    var isLibraryEmpty: Bool {
+        moods.allSatisfy { totalWallpaperCount(in: $0) == 0 }
+    }
+
+    /// Re-read the catalog after files changed underneath the store.
+    func reload() {
+        load()
+        restoreActiveMoodIfNeeded()
+    }
+
+    /// Copy a previous install's library in, then adopt it. Returns the
+    /// summary so callers can report what arrived.
+    @discardableResult
+    func importLegacyLibrary(from legacyRoot: URL) throws -> LegacyLibraryMigration.Summary {
+        let summary = try LegacyLibraryMigration.importLibrary(
+            from: legacyRoot,
+            into: storageRootURL
+        )
+        reload()
+        if activeMoodID == nil {
+            setActiveMoodID(moods.first?.id)
+        }
+        defaults.set(true, forKey: LegacyLibraryMigration.didImportKey)
+        return summary
+    }
+
     var activeMood: Mood? {
         guard let id = activeMoodID else { return nil }
         return moods.first { $0.id == id }

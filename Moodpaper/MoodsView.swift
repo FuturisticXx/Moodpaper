@@ -12,6 +12,15 @@ struct MoodsView: View {
     @State private var showingCreateSheet = false
     @State private var editingMood: Mood? = nil
     @State private var importRequest: MoodImportRequest?
+    @State private var legacyImportResult: LegacyImportResult?
+    @AppStorage(LegacyLibraryMigration.didImportKey) private var didImportLegacyLibrary = false
+
+    /// Offered while the library is still empty, because that is exactly the
+    /// state an upgrade to a sandboxed build lands in: the previous install's
+    /// Vibes live in a folder this build cannot reach on its own.
+    private var showLegacyImport: Bool {
+        !didImportLegacyLibrary && store.isLibraryEmpty
+    }
 
     var body: some View {
         ScrollView {
@@ -33,6 +42,10 @@ struct MoodsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(HorizonColors.secondaryAccent)
+                }
+
+                if showLegacyImport {
+                    LegacyLibraryImportCard(onImport: importLegacyLibrary)
                 }
 
                 if store.moods.isEmpty {
@@ -92,6 +105,76 @@ struct MoodsView: View {
                 initialPicker: request.initialPicker
             )
         }
+        .alert(item: $legacyImportResult) { result in
+            Alert(title: Text(result.title), message: Text(result.message), dismissButton: .default(Text("OK")))
+        }
+    }
+
+    private func importLegacyLibrary() {
+        let legacyRoot: URL
+        switch LegacyLibraryMigration.promptForLegacyRoot() {
+        case .cancelled:
+            return
+        case .notALibrary(let picked):
+            legacyImportResult = LegacyImportResult(
+                title: "Not a Moodpaper Library",
+                message: "“\(picked.lastPathComponent)” has no Moods folder inside it. Choose the Moodpaper folder itself rather than one of the folders within it."
+            )
+            return
+        case .selected(let picked):
+            legacyRoot = picked
+        }
+
+        do {
+            let summary = try store.importLegacyLibrary(from: legacyRoot)
+            didImportLegacyLibrary = true
+            legacyImportResult = LegacyImportResult(
+                title: summary.moodCount > 0 ? "Library Imported" : "Nothing to Import",
+                message: summary.moodCount > 0
+                    ? "Brought in \(summary.moodCount) Vibe\(summary.moodCount == 1 ? "" : "s") and \(summary.imageCount) wallpaper\(summary.imageCount == 1 ? "" : "s")."
+                    : "That folder's Vibes are already in your library."
+            )
+        } catch {
+            legacyImportResult = LegacyImportResult(
+                title: "Import Failed",
+                message: error.localizedDescription
+            )
+        }
+    }
+}
+
+private struct LegacyImportResult: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private struct LegacyLibraryImportCard: View {
+    let onImport: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: HorizonSpacing.md) {
+            Image(systemName: "arrow.down.doc")
+                .font(.system(size: 22))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(HorizonColors.secondaryAccent)
+
+            VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
+                Text("Coming from an earlier version?")
+                    .font(HorizonTypography.bodyMedium)
+                    .foregroundColor(HorizonColors.textPrimary)
+                Text("Your previous Vibes and wallpapers live in a folder this version cannot open on its own. Point Moodpaper at it and everything copies across — the originals stay where they are.")
+                    .font(HorizonTypography.caption)
+                    .foregroundColor(HorizonColors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: HorizonSpacing.sm)
+
+            Button("Import…", action: onImport)
+                .buttonStyle(.bordered)
+        }
+        .horizonGlassCard(style: .standard, padding: HorizonSpacing.lg)
     }
 }
 
