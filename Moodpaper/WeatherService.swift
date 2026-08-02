@@ -1,13 +1,14 @@
 import Foundation
 import WeatherKit
 import CoreLocation
+import AppKit
 internal import Combine
 
 // MARK: - Horizon Weather Condition
 // Local abstraction over WeatherKit's WeatherCondition.
 // Keeps the rest of the app decoupled from a direct WeatherKit dependency.
 
-enum HorizonCondition: String, CaseIterable {
+enum HorizonCondition: String, CaseIterable, Codable {
     case clear, mostlyClear, partlyCloudy, mostlyCloudy, cloudy
     case foggy, haze, smoky
     case drizzle, rain, heavyRain, freezingDrizzle, freezingRain, sunShowers
@@ -18,7 +19,7 @@ enum HorizonCondition: String, CaseIterable {
 
 // MARK: - Horizon Weather Model
 
-struct HorizonWeather: Equatable {
+struct HorizonWeather: Equatable, Codable {
     let temperature: Double          // Celsius
     let condition: HorizonCondition
     let isDaylight: Bool
@@ -30,21 +31,37 @@ struct HorizonWeather: Equatable {
     }
 }
 
+struct WeatherCacheSnapshot: Codable, Equatable {
+    let weather: HorizonWeather
+    let source: String
+    let fetchedAt: Date
+
+    func isFresh(at now: Date, maximumAge: TimeInterval) -> Bool {
+        let age = now.timeIntervalSince(fetchedAt)
+        return age >= 0 && age <= maximumAge
+    }
+}
+
 // MARK: - WeatherKit Service
 
 @MainActor
 class HorizonWeatherService: ObservableObject {
     static let shared = HorizonWeatherService()
 
-    @Published var currentWeather: HorizonWeather?
-    @Published var isLoading = false
-    @Published var error: Error?
+    @Published private(set) var currentWeather: HorizonWeather?
+    @Published private(set) var isLoading = false
+    @Published private(set) var error: Error?
+    @Published private(set) var source: String = "none"   // "weatherkit" or "open-meteo"
+    @Published private(set) var lastSuccessfulAt: Date?
+    @Published private(set) var lastFailureDescription: String?
 
     private let locationService = LocationService.shared
     private let weatherService = WeatherService.shared   // WeatherKit
     private var cancellables = Set<AnyCancellable>()
     private var refreshTimer: Timer?
     private var isFetching = false
+    private var refreshRequestedWhileFetching = false
+    private var stateVersion = 0
 
     deinit {
         cancellables.removeAll()
@@ -55,33 +72,49 @@ class HorizonWeatherService: ObservableObject {
     private static let retryInterval:   TimeInterval =  5 * 60  // 5 minutes on failure
     private static let weatherKitTimeout: TimeInterval = 6
     private static let openMeteoTimeout: TimeInterval = 8
+    private static let minimumAutomaticRefreshAge: TimeInterval = 5 * 60
+    private static let maximumCacheAge: TimeInterval = 6 * 60 * 60
+    private static let weatherCacheKey = "weather.cache.snapshot.v1"
 
     private init() {
-        // Fetch whenever location becomes available or changes significantly.
+        restoreCachedWeatherIfAvailable()
+
+        // Fetch whenever location becomes available, including a fresh fix at
+        // the same coordinates after activation. Freshness throttling below
+        // collapses redundant automatic requests without coupling refreshes to
+        // physical movement.
         // Using debounce so a burst of location updates collapses into one fetch.
         locationService.$currentLocation
             .compactMap { $0 }
-            .removeDuplicates { a, b in a.distance(from: b) < 5_000 }  // skip if < 5 km change
             .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    await self?.fetchWeather()
+                    await self?.refreshWeather(reason: "locationUpdated")
                 }
             }
             .store(in: &cancellables)
 
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.refreshWeather(reason: "systemWake")
+                }
+            }
+            .store(in: &cancellables)
     }
 
     private func scheduleRefresh(after interval: TimeInterval) {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.fetchWeather()
+                await self?.refreshWeather(reason: "scheduled", force: true)
             }
         }
     }
 
-    @Published var source: String = "none"   // "weatherkit" or "open-meteo"
+    static func nextRefreshInterval(latestAttemptSucceeded: Bool) -> TimeInterval {
+        latestAttemptSucceeded ? refreshInterval : retryInterval
+    }
 
     var attributionLabel: String {
         Self.attributionLabel(for: source)
@@ -92,12 +125,16 @@ class HorizonWeatherService: ObservableObject {
     }
 
     func clearWeather(reason: String? = nil) {
+        stateVersion += 1
         refreshTimer?.invalidate()
         refreshTimer = nil
         currentWeather = nil
         error = nil
         isLoading = false
         source = "none"
+        lastSuccessfulAt = nil
+        lastFailureDescription = nil
+        UserDefaults.standard.removeObject(forKey: Self.weatherCacheKey)
         if let reason {
             print("[WeatherService] Cleared weather state: \(reason)")
         }
@@ -106,23 +143,55 @@ class HorizonWeatherService: ObservableObject {
     // MARK: - Fetch
 
     func fetchWeather() async {
-        guard !isFetching else {
-            print("[WeatherService] Fetch already in progress, skipping duplicate request")
+        await refreshWeather(reason: "direct", force: true)
+    }
+
+    func refreshWeather(reason: String, force: Bool = false) async {
+        if isFetching {
+            refreshRequestedWhileFetching = true
+            print("[WeatherService] Queued refresh while fetch is in progress (\(reason))")
             return
         }
 
         guard let location = locationService.currentLocation else {
             print("[WeatherService] No location available, skipping fetch")
             isLoading = false
+            lastFailureDescription = "Location is unavailable."
+            let defaults = UserDefaults.standard
+            let useDeviceLocation = defaults.object(forKey: "useDeviceLocation") as? Bool ?? true
+            let locationAuthorized = locationService.authorizationStatus == .authorized
+                || locationService.authorizationStatus == .authorizedAlways
+            if useDeviceLocation && locationAuthorized {
+                locationService.refreshLocation()
+                scheduleRefresh(after: Self.retryInterval)
+            }
+            return
+        }
+
+        if !force,
+           let lastSuccessfulAt,
+           Date().timeIntervalSince(lastSuccessfulAt) < Self.minimumAutomaticRefreshAge {
+            print("[WeatherService] Weather is fresh; skipped automatic refresh (\(reason))")
             return
         }
 
         isLoading = true
-        error = nil
         isFetching = true
+        let requestStateVersion = stateVersion
+        var latestAttemptSucceeded = false
         defer {
             isLoading = false
             isFetching = false
+            if requestStateVersion == stateVersion {
+                scheduleRefresh(after: Self.nextRefreshInterval(latestAttemptSucceeded: latestAttemptSucceeded))
+            }
+
+            if refreshRequestedWhileFetching {
+                refreshRequestedWhileFetching = false
+                Task { @MainActor [weak self] in
+                    await self?.refreshWeather(reason: "queued", force: true)
+                }
+            }
         }
 
         // Try WeatherKit first
@@ -133,7 +202,7 @@ class HorizonWeatherService: ObservableObject {
             let current = weather.currentWeather
 
             let newCondition = mapCondition(current.condition)
-            currentWeather = HorizonWeather(
+            let horizonWeather = HorizonWeather(
                 temperature: current.temperature.converted(to: .celsius).value,
                 condition: newCondition,
                 isDaylight: current.isDaylight,
@@ -141,75 +210,89 @@ class HorizonWeatherService: ObservableObject {
                 humidity: current.humidity
             )
 
-            source = "weatherkit"
+            guard requestStateVersion == stateVersion else {
+                print("[WeatherService] Discarded WeatherKit result after weather state was cleared")
+                return
+            }
+            recordSuccess(weather: horizonWeather, source: "weatherkit")
+            latestAttemptSucceeded = true
 
             if let temp = currentWeather?.temperatureFahrenheit {
                 print("[WeatherService] WeatherKit fetched: \(current.condition), \(Int(temp))°F")
             } else {
                 print("[WeatherService] WeatherKit fetched: \(current.condition)")
             }
-            scheduleRefresh(after: Self.refreshInterval)
             return
         } catch {
             print("[WeatherService] WeatherKit failed: \(error). Falling back to Open-Meteo.")
         }
 
+        guard requestStateVersion == stateVersion else {
+            print("[WeatherService] Stopped fallback after weather state was cleared")
+            return
+        }
+
         // Fallback: Open-Meteo (free, no API key)
-        await fetchFromOpenMeteo(location: location)
-        // Schedule next refresh: shorter interval on failure so we recover quickly
-        scheduleRefresh(after: currentWeather != nil ? Self.refreshInterval : Self.retryInterval)
+        do {
+            let weather = try await fetchFromOpenMeteo(location: location)
+            guard requestStateVersion == stateVersion else {
+                print("[WeatherService] Discarded Open-Meteo result after weather state was cleared")
+                return
+            }
+            recordSuccess(weather: weather, source: "open-meteo")
+            latestAttemptSucceeded = true
+            if let temp = currentWeather?.temperatureFahrenheit {
+                print("[WeatherService] Open-Meteo fetched: \(Int(temp))°F")
+            }
+        } catch {
+            guard requestStateVersion == stateVersion else { return }
+            self.error = error
+            lastFailureDescription = error.localizedDescription
+            print("[WeatherService] Open-Meteo fetch error: \(error)")
+        }
     }
 
     // MARK: - Open-Meteo Fallback
 
-    private func fetchFromOpenMeteo(location: CLLocation) async {
+    private func fetchFromOpenMeteo(location: CLLocation) async throws -> HorizonWeather {
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
         let urlString = "https://api.open-meteo.com/v1/forecast?latitude=\(lat)&longitude=\(lon)&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,is_day"
 
         guard let url = URL(string: urlString) else {
-            self.error = NSError(domain: "HorizonWeather", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid Open-Meteo URL"])
-            return
+            throw NSError(domain: "HorizonWeather", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid Open-Meteo URL"])
         }
 
-        do {
-            let (data, _) = try await withTimeout(seconds: Self.openMeteoTimeout) {
-                try await URLSession.shared.data(from: url)
-            }
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let current = json["current"] as? [String: Any],
-                  let tempC = current["temperature_2m"] as? Double,
-                  let weatherCode = current["weather_code"] as? Int,
-                  let isDay = current["is_day"] as? Int else {
-                self.error = NSError(domain: "HorizonWeather", code: -2, userInfo: [NSLocalizedDescriptionKey: "Failed to parse Open-Meteo response"])
-                print("[WeatherService] Open-Meteo parse error")
-                return
-            }
-
-            let windSpeed = current["wind_speed_10m"] as? Double
-            let humidity = (current["relative_humidity_2m"] as? Double).map { $0 / 100.0 }
-
-            let newCondition = mapOpenMeteoCode(weatherCode)
-            currentWeather = HorizonWeather(
-                temperature: tempC,
-                condition: newCondition,
-                isDaylight: isDay == 1,
-                windSpeed: windSpeed,
-                humidity: humidity
-            )
-
-            source = "open-meteo"
-            self.error = nil
-
-            if let temp = currentWeather?.temperatureFahrenheit {
-                print("[WeatherService] Open-Meteo fetched: code=\(weatherCode), \(Int(temp))°F")
-            } else {
-                print("[WeatherService] Open-Meteo fetched: code=\(weatherCode)")
-            }
-        } catch {
-            self.error = error
-            print("[WeatherService] Open-Meteo fetch error: \(error)")
+        let (rawData, response) = try await withTimeout(seconds: Self.openMeteoTimeout) {
+            try await URLSession.shared.data(from: url)
         }
+        let data = try Self.validateOpenMeteoResponse(rawData, response: response)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let current = json["current"] as? [String: Any],
+              let tempC = current["temperature_2m"] as? Double,
+              let weatherCode = current["weather_code"] as? Int,
+              let isDay = current["is_day"] as? Int else {
+            throw NSError(domain: "HorizonWeather", code: -2, userInfo: [NSLocalizedDescriptionKey: "Failed to parse Open-Meteo response"])
+        }
+
+        let windSpeed = current["wind_speed_10m"] as? Double
+        let humidity = (current["relative_humidity_2m"] as? Double).map { $0 / 100.0 }
+
+        return HorizonWeather(
+            temperature: tempC,
+            condition: mapOpenMeteoCode(weatherCode),
+            isDaylight: isDay == 1,
+            windSpeed: windSpeed,
+            humidity: humidity
+        )
+    }
+
+    static func validateOpenMeteoResponse(_ data: Data, response: URLResponse) throws -> Data {
+        guard let response = response as? HTTPURLResponse,
+              (200...299).contains(response.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        return data
     }
 
     private func withTimeout<T: Sendable>(
@@ -232,6 +315,40 @@ class HorizonWeatherService: ObservableObject {
             group.cancelAll()
             return result
         }
+    }
+
+    private func recordSuccess(weather: HorizonWeather, source: String, at date: Date = Date()) {
+        currentWeather = weather
+        self.source = source
+        lastSuccessfulAt = date
+        error = nil
+        lastFailureDescription = nil
+
+        let snapshot = WeatherCacheSnapshot(weather: weather, source: source, fetchedAt: date)
+        if let data = try? JSONEncoder().encode(snapshot) {
+            UserDefaults.standard.set(data, forKey: Self.weatherCacheKey)
+        }
+    }
+
+    private func restoreCachedWeatherIfAvailable(now: Date = Date()) {
+        let defaults = UserDefaults.standard
+        let useDeviceLocation = defaults.object(forKey: "useDeviceLocation") as? Bool ?? true
+        let locationAuthorized = locationService.authorizationStatus == .authorized
+            || locationService.authorizationStatus == .authorizedAlways
+
+        guard useDeviceLocation,
+              locationAuthorized,
+              let data = defaults.data(forKey: Self.weatherCacheKey),
+              let snapshot = try? JSONDecoder().decode(WeatherCacheSnapshot.self, from: data),
+              snapshot.isFresh(at: now, maximumAge: Self.maximumCacheAge),
+              snapshot.source == "weatherkit" || snapshot.source == "open-meteo" else {
+            return
+        }
+
+        currentWeather = snapshot.weather
+        source = snapshot.source
+        lastSuccessfulAt = snapshot.fetchedAt
+        print("[WeatherService] Restored cached weather from \(snapshot.fetchedAt)")
     }
 
     // MARK: - Open-Meteo WMO weather code → local enum
@@ -308,9 +425,6 @@ class HorizonWeatherService: ObservableObject {
     // MARK: - Display Helpers
 
     var weatherDescription: String {
-        if error != nil {
-            return "Weather unavailable"
-        }
         guard let weather = currentWeather else {
             return isLoading ? "Loading weather..." : "Weather unavailable"
         }

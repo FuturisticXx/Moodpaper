@@ -122,7 +122,7 @@ struct ContentView: View {
                                 ProgressView()
                                     .scaleEffect(0.8)
                                     .tint(.white)
-                                Text("Changing Wallpaper...")
+                                Text("Changing wallpaper…")
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundColor(.white)
                             }
@@ -234,6 +234,7 @@ struct ContentView: View {
                     ActionButton(icon: "shuffle", label: "Skip") {
                         wallpaperManager.skipToNext()
                     }
+                    .disabled(wallpaperManager.isChangingWallpaper)
                     ActionButton(icon: pauseRotation ? "pin.fill" : "pin", label: "Pin", tint: pauseRotation ? .yellow : nil) {
                         pauseRotation.toggle()
                     }

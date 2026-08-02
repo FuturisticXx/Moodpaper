@@ -64,9 +64,9 @@ final class WallpaperManagerStateTests: XCTestCase {
     func testHistoryTriggerDisplayNamesAreReadable() {
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "scheduledTick"), "Schedule")
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "weatherUpdate"), "Weather")
-        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "moodChange"), "Mood")
+        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "moodChange"), "Vibe")
         // Legacy persisted entries from the pre-pivot vibe system.
-        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "vibeChange"), "Mood")
+        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "vibeChange"), "Vibe")
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "manual"), "Manual")
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: nil), "Auto")
         // Raw internal ids must never reach the history UI.
@@ -479,6 +479,84 @@ final class WallpaperManagerStateTests: XCTestCase {
                 secondsSinceLastChange: 25,
                 spacesSyncOwnsConsistency: true
             )
+        )
+    }
+
+    // MARK: - Desktop apply confirmation
+
+    func testDesktopApplyConfirmationCheckpointsBackOffInsteadOfPollingEveryHundredMilliseconds() {
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationCheckpoints(timeout: 20),
+            [0.5, 1.5, 3, 5, 7, 9, 12, 16, 20]
+        )
+    }
+
+    func testDesktopApplyConfirmationCheckpointsRespectShortTimeout() {
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationCheckpoints(timeout: 0.25),
+            [0.25]
+        )
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationCheckpoints(timeout: 0),
+            []
+        )
+    }
+
+    func testDesktopApplyConfirmationWaitsForEveryDisplay() {
+        let displayOne = URL(fileURLWithPath: "/tmp/display-one.jpg")
+        let displayTwo = URL(fileURLWithPath: "/tmp/display-two.jpg")
+
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationDecision(
+                expectedURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": displayTwo
+                ],
+                liveURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": URL(fileURLWithPath: "/tmp/previous.jpg")
+                ],
+                elapsed: 0.5,
+                timeout: 12
+            ),
+            .waiting
+        )
+    }
+
+    func testDesktopApplyConfirmationCompletesWhenEveryDisplayMatches() {
+        let displayOne = URL(fileURLWithPath: "/tmp/display-one.jpg")
+        let displayTwo = URL(fileURLWithPath: "/tmp/display-two.jpg")
+
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationDecision(
+                expectedURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": displayTwo
+                ],
+                liveURLsByScreen: [
+                    "Display 1": displayOne,
+                    "Display 2": displayTwo
+                ],
+                elapsed: 0.5,
+                timeout: 12
+            ),
+            .confirmed
+        )
+    }
+
+    func testDesktopApplyConfirmationStopsWaitingAtTimeout() {
+        XCTAssertEqual(
+            WallpaperManager.desktopApplyConfirmationDecision(
+                expectedURLsByScreen: [
+                    "Display 1": URL(fileURLWithPath: "/tmp/next.jpg")
+                ],
+                liveURLsByScreen: [
+                    "Display 1": URL(fileURLWithPath: "/tmp/previous.jpg")
+                ],
+                elapsed: 12,
+                timeout: 12
+            ),
+            .timedOut
         )
     }
 

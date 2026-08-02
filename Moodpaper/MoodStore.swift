@@ -20,6 +20,12 @@ struct Mood: Codable, Identifiable, Equatable {
     var updatedAt: Date
 }
 
+struct WallpaperImportSummary: Equatable, Sendable {
+    let discoveredCount: Int
+    let importedCount: Int
+    let failedCount: Int
+}
+
 // MARK: - Mood Store
 
 // Owns the Mood catalog and its files.
@@ -36,7 +42,11 @@ final class MoodStore: ObservableObject {
     static let shared = MoodStore()
 
     static let activeMoodIDKey = "moods.activeID"
-    static let starterMoodName = "Everyday"
+    static let allDayFolderName = "AllDay"
+
+    private nonisolated static let supportedImageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "heic", "heif", "tiff", "bmp"
+    ]
 
     @Published private(set) var moods: [Mood] = []
     @Published private(set) var activeMoodID: String? = nil
@@ -63,10 +73,46 @@ final class MoodStore: ObservableObject {
             .appendingPathComponent("Moodpaper")
         self.moodsRootURL = base.appendingPathComponent("Moods")
         load()
-        ensureStarterMood()
+        restoreActiveMoodIfNeeded()
     }
 
     // MARK: - Read helpers
+
+    /// The library root (the folder containing `Moods/`). Sandboxed and
+    /// non-sandboxed builds resolve this to different places, which is what
+    /// `LegacyLibraryMigration` exists to bridge.
+    var storageRootURL: URL {
+        moodsRootURL.deletingLastPathComponent()
+    }
+
+    /// True when the catalog holds no images at all — either no Vibes, or
+    /// only empty ones. Both are states a fresh sandbox container lands in
+    /// when the user's real library was written by a non-sandboxed build.
+    var isLibraryEmpty: Bool {
+        moods.allSatisfy { totalWallpaperCount(in: $0) == 0 }
+    }
+
+    /// Re-read the catalog after files changed underneath the store.
+    func reload() {
+        load()
+        restoreActiveMoodIfNeeded()
+    }
+
+    /// Copy a previous install's library in, then adopt it. Returns the
+    /// summary so callers can report what arrived.
+    @discardableResult
+    func importLegacyLibrary(from legacyRoot: URL) throws -> LegacyLibraryMigration.Summary {
+        let summary = try LegacyLibraryMigration.importLibrary(
+            from: legacyRoot,
+            into: storageRootURL
+        )
+        reload()
+        if activeMoodID == nil {
+            setActiveMoodID(moods.first?.id)
+        }
+        defaults.set(true, forKey: LegacyLibraryMigration.didImportKey)
+        return summary
+    }
 
     var activeMood: Mood? {
         guard let id = activeMoodID else { return nil }
@@ -87,19 +133,48 @@ final class MoodStore: ObservableObject {
         return url
     }
 
+    /// Shared fallback pool used whenever a mood has no wallpapers assigned
+    /// specifically to the current time slot.
+    func allDayFolderURL(in mood: Mood) -> URL {
+        let url = moodsRootURL
+            .appendingPathComponent(mood.id)
+            .appendingPathComponent(Self.allDayFolderName)
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
     /// The images assigned to one slot of a mood, sorted by filename so
     /// ordering is stable across launches.
     func wallpapers(for slot: TimeSlot, in mood: Mood) -> [URL] {
         let folder = moodsRootURL
             .appendingPathComponent(mood.id)
             .appendingPathComponent(slot.rawValue)
+        return wallpaperURLs(in: folder)
+    }
+
+    func allDayWallpapers(in mood: Mood) -> [URL] {
+        let folder = moodsRootURL
+            .appendingPathComponent(mood.id)
+            .appendingPathComponent(Self.allDayFolderName)
+        return wallpaperURLs(in: folder)
+    }
+
+    /// Slot-specific choices intentionally override the shared pool. Empty
+    /// slots inherit All Day, keeping simple moods simple without weakening
+    /// the existing per-time-slot customization model.
+    func effectiveWallpapers(for slot: TimeSlot, in mood: Mood) -> [URL] {
+        let slotWallpapers = wallpapers(for: slot, in: mood)
+        return slotWallpapers.isEmpty ? allDayWallpapers(in: mood) : slotWallpapers
+    }
+
+    private func wallpaperURLs(in folder: URL) -> [URL] {
         let contents = (try? fileManager.contentsOfDirectory(
             at: folder,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )) ?? []
         return contents
-            .filter { ["jpg", "jpeg", "png", "heic", "heif", "tiff", "bmp"].contains($0.pathExtension.lowercased()) }
+            .filter { Self.supportedImageExtensions.contains($0.pathExtension.lowercased()) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
@@ -108,7 +183,8 @@ final class MoodStore: ObservableObject {
     }
 
     func totalWallpaperCount(in mood: Mood) -> Int {
-        TimeSlot.allCases.reduce(0) { $0 + wallpaperCount(for: $1, in: mood) }
+        allDayWallpapers(in: mood).count
+            + TimeSlot.allCases.reduce(0) { $0 + wallpaperCount(for: $1, in: mood) }
     }
 
     // MARK: - CRUD
@@ -130,6 +206,9 @@ final class MoodStore: ObservableObject {
             withIntermediateDirectories: true
         )
         save()
+        if activeMoodID == nil {
+            setActiveMoodID(mood.id)
+        }
         AnalyticsManager.shared.log(.moodCreated, metadata: ["id": mood.id])
         return mood
     }
@@ -172,8 +251,7 @@ final class MoodStore: ObservableObject {
     }
 
     /// Delete a mood and its files. The active mood falls back to the first
-    /// remaining mood; deleting the last mood recreates the starter so the
-    /// app never has zero moods.
+    /// remaining mood, or to no active mood when the user deletes the last.
     func delete(_ mood: Mood) {
         guard let idx = moods.firstIndex(where: { $0.id == mood.id }) else { return }
         moods.remove(at: idx)
@@ -182,7 +260,6 @@ final class MoodStore: ObservableObject {
             setActiveMoodID(moods.first?.id)
         }
         save()
-        ensureStarterMood()
         AnalyticsManager.shared.log(.moodDeleted, metadata: ["id": mood.id])
     }
 
@@ -218,6 +295,27 @@ final class MoodStore: ObservableObject {
         ])
     }
 
+    /// Imports image files, folders, or a mixture of both into a mood's All
+    /// Day pool. Folder contents are discovered recursively, non-images are
+    /// ignored, and individual decode failures don't discard successful work.
+    func importAllDayWallpapers(from urls: [URL], in mood: Mood) async throws -> WallpaperImportSummary {
+        let destinationFolder = allDayFolderURL(in: mood)
+        let summary = try await Task.detached(priority: .userInitiated) {
+            try Self.importAllDayItems(urls, to: destinationFolder)
+        }.value
+
+        if summary.importedCount > 0 {
+            touch(mood)
+            objectWillChange.send()
+            AnalyticsManager.shared.log(.moodWallpaperImported, metadata: [
+                "moodID": mood.id,
+                "slot": Self.allDayFolderName,
+                "count": "\(summary.importedCount)"
+            ])
+        }
+        return summary
+    }
+
     func removeWallpaper(_ url: URL, from mood: Mood) throws {
         try fileManager.removeItem(at: url)
         touch(mood)
@@ -226,7 +324,7 @@ final class MoodStore: ObservableObject {
 
     /// Sanitized, collision-free destination filename. Same rule as
     /// UserWallpaperManager.normalizedImportDestination.
-    static func importDestination(for sourceURL: URL, in directory: URL) -> URL {
+    nonisolated static func importDestination(for sourceURL: URL, in directory: URL) -> URL {
         let rawBaseName = sourceURL.deletingPathExtension().lastPathComponent
         let sanitizedBaseName = rawBaseName
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -236,6 +334,77 @@ final class MoodStore: ObservableObject {
         let baseName = sanitizedBaseName.isEmpty ? "wallpaper" : sanitizedBaseName
         let uniqueSuffix = UUID().uuidString.lowercased().prefix(8)
         return directory.appendingPathComponent("\(baseName)-\(uniqueSuffix).jpg")
+    }
+
+    private nonisolated static func importAllDayItems(
+        _ sourceURLs: [URL],
+        to destinationFolder: URL
+    ) throws -> WallpaperImportSummary {
+        var securityScopedRoots: [URL] = []
+        for url in sourceURLs where url.startAccessingSecurityScopedResource() {
+            securityScopedRoots.append(url)
+        }
+        defer {
+            for url in securityScopedRoots {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileManager = FileManager.default
+        var discovered = Set<URL>()
+        var discoveryFailureCount = 0
+
+        for sourceURL in sourceURLs {
+            guard let values = try? sourceURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey]) else {
+                if supportedImageExtensions.contains(sourceURL.pathExtension.lowercased()) {
+                    discoveryFailureCount += 1
+                }
+                continue
+            }
+            if values.isDirectory == true {
+                let enumerator = fileManager.enumerator(
+                    at: sourceURL,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                    errorHandler: { _, _ in
+                        discoveryFailureCount += 1
+                        return true
+                    }
+                )
+                while let candidate = enumerator?.nextObject() as? URL {
+                    guard supportedImageExtensions.contains(candidate.pathExtension.lowercased()) else { continue }
+                    let candidateValues = try? candidate.resourceValues(forKeys: [.isRegularFileKey])
+                    if candidateValues?.isRegularFile == true {
+                        discovered.insert(candidate)
+                    }
+                }
+            } else if values.isRegularFile == true,
+                      supportedImageExtensions.contains(sourceURL.pathExtension.lowercased()) {
+                discovered.insert(sourceURL)
+            }
+        }
+
+        try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+        var importedCount = 0
+        var failedCount = discoveryFailureCount
+
+        for sourceURL in discovered.sorted(by: { $0.path < $1.path }) {
+            let destination = importDestination(for: sourceURL, in: destinationFolder)
+            do {
+                try writeNormalizedImage(from: sourceURL, to: destination)
+                importedCount += 1
+            } catch {
+                failedCount += 1
+                try? fileManager.removeItem(at: destination)
+                print("[MoodStore] Failed to import \(sourceURL.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        return WallpaperImportSummary(
+            discoveredCount: discovered.count + discoveryFailureCount,
+            importedCount: importedCount,
+            failedCount: failedCount
+        )
     }
 
     // MARK: - Persistence
@@ -263,13 +432,11 @@ final class MoodStore: ObservableObject {
         }
     }
 
-    /// Guarantee at least one mood exists and one is active. Runs at init
-    /// (first run creates the starter) and after deletes.
-    private func ensureStarterMood() {
-        if moods.isEmpty {
-            create(name: Self.starterMoodName)
-        }
-        if activeMood == nil {
+    /// Preserve existing catalogs while repairing a missing or stale active
+    /// selection. A fresh catalog intentionally stays empty until the user
+    /// creates their first Vibe.
+    private func restoreActiveMoodIfNeeded() {
+        if activeMood == nil, !moods.isEmpty {
             setActiveMoodID(moods.first?.id)
         }
     }

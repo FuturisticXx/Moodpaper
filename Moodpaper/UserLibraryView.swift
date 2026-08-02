@@ -3,14 +3,15 @@ import AppKit
 import UniformTypeIdentifiers
 import ImageIO
 
-// The Library edits the ACTIVE mood: each time-slot card imports into and
-// manages Moods/<activeMood>/<slot>/ via MoodStore. Switching moods (in the
-// Moods section) swaps which assignment set these cards show.
+// The Library edits the active Vibe: All Day is its shared fallback pool, and
+// each time-slot card can add an override. Switching Vibes swaps the complete
+// assignment set these cards show.
 struct UserLibraryView: View {
     var searchText: String = ""
     @ObservedObject private var store = MoodStore.shared
     @State private var selectedSlot: TimeSlot?
     @State private var showingFilePicker = false
+    @State private var showingAllDayImporter = false
     @State private var importingToSlot: TimeSlot?
     @State private var isDroppingOnSlot: TimeSlot? = nil
     @AppStorage(HorizonScheduleDefaults.timeSlotModeKey) private var timeSlotMode = "Detailed"
@@ -45,7 +46,9 @@ struct UserLibraryView: View {
 
                 Spacer()
 
-                Text("Drop images onto a slot, or tap + to browse")
+                Text(store.activeMood == nil
+                     ? "Create a Vibe to start adding wallpapers"
+                     : "Start with All Day, then customize any time slot")
                     .font(HorizonTypography.callout)
                     .foregroundColor(HorizonColors.textSecondary)
             }
@@ -53,9 +56,32 @@ struct UserLibraryView: View {
             .padding(.top, HorizonSpacing.xl)
             .padding(.bottom, HorizonSpacing.lg)
 
-            // Empty-mood banner — the landing spot for onboarding's "Add
-            // Your First Mood" CTA, so a brand-new mood explains itself.
-            if let mood = store.activeMood, isActiveMoodEmpty {
+            if store.activeMood == nil {
+                VStack(spacing: HorizonSpacing.md) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 32, weight: .semibold))
+                        .foregroundStyle(HorizonColors.secondaryAccent.gradient)
+                        .accessibilityHidden(true)
+                    Text("Your wallpapers need a Vibe")
+                        .font(HorizonTypography.title2)
+                        .foregroundColor(HorizonColors.textPrimary)
+                    Text("Give your desktop a feeling first. Then add a folder or choose photos one by one.")
+                        .font(HorizonTypography.callout)
+                        .foregroundColor(HorizonColors.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        NotificationCenter.default.post(name: .navigateToMoods, object: nil)
+                    } label: {
+                        Label("Create Your First Vibe", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(HorizonColors.secondaryAccent)
+                }
+                .frame(maxWidth: .infinity, minHeight: 260)
+                .horizonGlassCard(style: .standard, padding: HorizonSpacing.xl)
+                .padding(.horizontal, HorizonSpacing.xxxl)
+                .padding(.bottom, HorizonSpacing.xxxl)
+            } else if let mood = store.activeMood, isActiveMoodEmpty {
                 HStack(spacing: HorizonSpacing.md) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 16, weight: .semibold))
@@ -64,7 +90,7 @@ struct UserLibraryView: View {
                         Text("\"\(mood.name)\" is empty")
                             .font(HorizonTypography.headline)
                             .foregroundColor(HorizonColors.textPrimary)
-                        Text("Import a few photos below for each part of the day. Empty slots simply hold your current wallpaper.")
+                        Text("Start with one folder or a few photos in All Day. You can fine-tune time slots later.")
                             .font(HorizonTypography.callout)
                             .foregroundColor(HorizonColors.textSecondary)
                     }
@@ -78,10 +104,27 @@ struct UserLibraryView: View {
             // Slot Cards — each edits the active mood's assignment for that slot
             if let mood = store.activeMood {
                 VStack(spacing: HorizonSpacing.lg) {
+                    AllDayWallpaperCard(
+                        wallpaperCount: store.allDayWallpapers(in: mood).count,
+                        onOpen: { showingAllDayImporter = true }
+                    )
+
+                    HStack {
+                        Text("Time-Slot Favorites")
+                            .font(HorizonTypography.headline)
+                            .foregroundColor(HorizonColors.textPrimary)
+                        Spacer()
+                        Text("These override All Day")
+                            .font(HorizonTypography.caption)
+                            .foregroundColor(HorizonColors.textTertiary)
+                    }
+
                     ForEach(filteredSlots, id: \.self) { slot in
                         TimeSlotCard(
                             slot: slot,
                             wallpaperCount: store.wallpaperCount(for: slot, in: mood),
+                            usesAllDayFallback: store.wallpaperCount(for: slot, in: mood) == 0
+                                && !store.allDayWallpapers(in: mood).isEmpty,
                             isDropTarget: isDroppingOnSlot == slot,
                             onImport: {
                                 importingToSlot = slot
@@ -109,6 +152,11 @@ struct UserLibraryView: View {
         .sheet(item: $selectedSlot) { slot in
             ManageWallpapersSheet(slot: slot)
         }
+        .sheet(isPresented: $showingAllDayImporter) {
+            if let mood = store.activeMood {
+                MoodWallpaperImportView(mood: mood, mode: .adding)
+            }
+        }
         .fileImporter(
             isPresented: $showingFilePicker,
             allowedContentTypes: [.image],
@@ -128,11 +176,61 @@ struct UserLibraryView: View {
     }
 }
 
+// MARK: - All Day Card
+
+private struct AllDayWallpaperCard: View {
+    let wallpaperCount: Int
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: HorizonSpacing.md) {
+                ZStack {
+                    Circle()
+                        .fill(HorizonColors.secondaryAccent.opacity(0.18))
+                        .frame(width: 42, height: 42)
+                    Image(systemName: "sun.max.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(HorizonColors.secondaryAccent.gradient)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("All Day")
+                        .font(HorizonTypography.headline)
+                        .foregroundColor(HorizonColors.textPrimary)
+                    Text("A shared pool for every part of the day")
+                        .font(HorizonTypography.caption)
+                        .foregroundColor(HorizonColors.textSecondary)
+                }
+
+                Spacer()
+
+                HorizonBadge(
+                    text: wallpaperCount == 0 ? "Start Here" : "\(wallpaperCount)",
+                    color: HorizonColors.secondaryAccent,
+                    size: .small
+                )
+
+                Label(wallpaperCount == 0 ? "Add Wallpapers" : "Add More", systemImage: "plus.circle.fill")
+                    .font(HorizonTypography.bodyMedium)
+                    .foregroundColor(HorizonColors.secondaryAccent)
+            }
+            .padding(HorizonSpacing.lg)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .horizonGlassCard(style: .standard, padding: 0)
+        .accessibilityLabel("All Day, \(wallpaperCount) wallpapers")
+        .accessibilityHint("Opens folder, photo, and drag-and-drop import")
+    }
+}
+
 // MARK: - Time Slot Card
 
 private struct TimeSlotCard: View {
     let slot: TimeSlot
     let wallpaperCount: Int
+    let usesAllDayFallback: Bool
     let isDropTarget: Bool
     let onImport: () -> Void
     let onManage: () -> Void
@@ -165,8 +263,8 @@ private struct TimeSlotCard: View {
 
             // Wallpaper count badge
             HorizonBadge(
-                text: wallpaperCount == 0 ? "Empty" : "\(wallpaperCount)",
-                color: wallpaperCount == 0 ? .secondary : slotColor,
+                text: wallpaperCount == 0 ? (usesAllDayFallback ? "Using All Day" : "Empty") : "\(wallpaperCount)",
+                color: wallpaperCount == 0 ? (usesAllDayFallback ? HorizonColors.secondaryAccent : .secondary) : slotColor,
                 size: .small
             )
 

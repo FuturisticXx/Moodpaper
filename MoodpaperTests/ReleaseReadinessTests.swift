@@ -98,6 +98,66 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(source.contains("let screen: NSScreen\n            let preparedURL"))
     }
 
+    func testWallpaperEngineUsesAllDayFallbackResolution() throws {
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperManager.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("MoodStore.shared.effectiveWallpapers(for: timeSlot"))
+    }
+
+    func testVibeCreationContinuesIntoAllDayWallpaperImport() throws {
+        let moodsSource = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodsView.swift"),
+            encoding: .utf8
+        )
+        let importSource = (try? String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodWallpaperImportView.swift"),
+            encoding: .utf8
+        )) ?? ""
+
+        XCTAssertTrue(moodsSource.contains("MoodWallpaperImportView"))
+        XCTAssertTrue(moodsSource.contains("Text(\"Vibes\")"))
+        XCTAssertTrue(moodsSource.contains("Label(\"New Vibe\""))
+        XCTAssertTrue(moodsSource.contains("Create Your First Vibe"))
+        XCTAssertTrue(moodsSource.contains("Add Wallpapers"))
+        XCTAssertTrue(importSource.contains(#"Bring \(mood.name) to Life"#))
+        XCTAssertTrue(importSource.contains("Choose Folder"))
+        XCTAssertTrue(importSource.contains("Choose Photos"))
+        XCTAssertTrue(importSource.contains("Use This Vibe"))
+        XCTAssertTrue(importSource.contains("allowedContentTypes: [.folder]"))
+        XCTAssertTrue(importSource.contains("allowedContentTypes: [.image]"))
+        XCTAssertTrue(importSource.contains(".onDrop(of: [.fileURL]"))
+    }
+
+    func testMoodImportCollageBoundsRotatedThumbnailOverflow() throws {
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodWallpaperImportView.swift"),
+            encoding: .utf8
+        )
+        let collageStart = try XCTUnwrap(source.range(of: "private var thumbnailCollage"))
+        let collageEnd = try XCTUnwrap(
+            source.range(of: "private func handlePickerResult", range: collageStart.upperBound..<source.endIndex)
+        )
+        let collageSource = source[collageStart.lowerBound..<collageEnd.lowerBound]
+
+        XCTAssertTrue(collageSource.contains(".frame(maxWidth: .infinity)"))
+        XCTAssertTrue(collageSource.contains(".frame(height: 154)"))
+        XCTAssertTrue(collageSource.contains(".clipped()"))
+    }
+
+    func testLibrarySurfacesAllDayPoolBeforeTimeSlots() throws {
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("Text(\"All Day\")"))
+        XCTAssertTrue(source.contains("store.allDayWallpapers(in: mood)"))
+        XCTAssertTrue(source.contains("Using All Day"))
+    }
+
     func testViewsDoNotCallApplyMoodChangeDirectly() throws {
         // Mood-change refresh is owned by MoodStore.onActiveMoodChange via
         // WallpaperManager.requestMoodStateRefresh() (coalesced, one apply
@@ -116,14 +176,17 @@ final class ReleaseReadinessTests: XCTestCase {
         }
     }
 
-    func testDashboardSkipButtonDoesNotUseFixedSleepForPressedState() throws {
+    func testDashboardSkipButtonShowsManagerBackedChangingState() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/DashboardView.swift"),
             encoding: .utf8
         )
 
         XCTAssertFalse(source.contains("Task.sleep(nanoseconds: 300_000_000)"))
-        XCTAssertTrue(source.contains(".onChange(of: wallpaperManager.isChangingWallpaper)"))
+        XCTAssertFalse(source.contains("@State private var isSkipping"))
+        XCTAssertTrue(source.contains("if wallpaperManager.isChangingWallpaper"))
+        XCTAssertTrue(source.contains("Text(\"Changing…\")"))
+        XCTAssertTrue(source.contains(".disabled(wallpaperManager.isChangingWallpaper)"))
     }
 
     func testDashboardCurrentWallpaperCallbacksDeferManagerMutationsOutOfViewUpdates() throws {
@@ -138,14 +201,16 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(source.contains(".onChange(of: hostingScreen?.localizedName) { _, _ in\n            wallpaperManager.refreshCurrentPreview"))
     }
 
-    func testWallpaperApplyDoesNotRunBlockingDesktopApplyAtUserInitiatedPriority() throws {
+    func testWallpaperApplyUsesMainActorForPublicAppKitDesktopAPI() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperManager.swift"),
             encoding: .utf8
         )
 
-        XCTAssertFalse(source.contains("group.addTask(priority: .userInitiated)"))
-        XCTAssertTrue(source.contains("group.addTask(priority: .utility)"))
+        XCTAssertTrue(source.contains("@MainActor\n    private static func applyWallpaperJobsOnMainActor"))
+        XCTAssertTrue(source.contains("return confirmed"))
+        XCTAssertFalse(source.contains("applyWallpaperJobsSerially"))
+        XCTAssertFalse(source.contains("Task.detached(priority: .utility)"))
     }
 
     func testSettingsNavigationDoesNotExposeDebugOrDiagnosticsSection() throws {

@@ -23,13 +23,18 @@ enum OnboardingCopy {
     static let step3ContinueCta = "Continue"
 
     static let step4Eyebrow = "LAST STEP · 4 OF 4"
-    static let step4Title = "Add your first mood."
-    static let step4Body = "Everyday is your starter mood, empty and ready. Import a few photos for each part of the day, or add more moods anytime from Settings."
-    static let step4PrimaryCta = "Add Your First Mood"
+    static let step4Title = "What's your Vibe?"
+    static let step4Body = "Name the feeling you want on your desktop. You can change it or create more Vibes anytime."
+    static let step4NamePlaceholder = "Cozy Weekend, Deep Focus, Dreamy Escape…"
+    static let step4PrimaryCta = "Create My Vibe"
     static let step4SecondaryCta = "I'll do this later"
 
     static let skipLink = "Skip"
     static let backLink = "Back"
+}
+
+enum VibeNaming {
+    static let suggestions = ["Calm", "Focused", "Dreamy", "Energized"]
 }
 
 private enum OnboardingStep: Int, CaseIterable {
@@ -121,8 +126,11 @@ struct OnboardingView: View {
                 onSkip: { advance() }
             )
         case .moods:
-            FirstMoodCard(
-                onAddMood: { completeOnboardingAndOpenLibrary() },
+            FirstVibeCard(
+                onCreate: { name in
+                    guard MoodStore.shared.create(name: name) != nil else { return }
+                    completeOnboardingAndOpenLibrary()
+                },
                 onLater: { completeOnboarding() }
             )
         }
@@ -157,7 +165,7 @@ struct OnboardingView: View {
     }
 
     /// Finishes onboarding and lands the user directly in the Library, where
-    /// the starter mood's slots are waiting to be filled. The primary path
+    /// their new Vibe is ready for wallpapers. The primary path
     /// out of onboarding should end in an action, not a blank menu bar.
     private func completeOnboardingAndOpenLibrary() {
         NotificationCenter.default.post(name: .navigateToUserWallpapers, object: nil)
@@ -307,6 +315,7 @@ private struct CardBody: View {
 private struct PrimaryCTAButton: View {
     let title: String
     var icon: String? = nil
+    var isDisabled = false
     let action: () -> Void
 
     var body: some View {
@@ -335,6 +344,8 @@ private struct PrimaryCTAButton: View {
             .shadow(color: .white.opacity(0.18), radius: 18, y: 8)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.5 : 1)
     }
 }
 
@@ -517,24 +528,73 @@ private struct LocationCard: View {
     }
 }
 
-private struct FirstMoodCard: View {
-    let onAddMood: () -> Void
+private struct FirstVibeCard: View {
+    let onCreate: (String) -> Void
     let onLater: () -> Void
+    @State private var name = ""
+    @FocusState private var isNameFocused: Bool
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         GlassCard {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 18) {
                 CardEyebrow(text: OnboardingCopy.step4Eyebrow)
                 CardTitle(text: OnboardingCopy.step4Title)
                 CardBody(text: OnboardingCopy.step4Body)
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Vibe name")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                    TextField(OnboardingCopy.step4NamePlaceholder, text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isNameFocused)
+                        .onSubmit(createVibe)
+                }
+
+                HStack(spacing: 8) {
+                    ForEach(VibeNaming.suggestions, id: \.self) { suggestion in
+                        Button(suggestion) {
+                            name = suggestion
+                            isNameFocused = true
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 11)
+                        .frame(height: 30)
+                        .background(.white.opacity(0.10), in: Capsule())
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Vibe name suggestions")
+
                 HStack(spacing: 12) {
-                    PrimaryCTAButton(title: OnboardingCopy.step4PrimaryCta, icon: "plus", action: onAddMood)
+                    PrimaryCTAButton(
+                        title: OnboardingCopy.step4PrimaryCta,
+                        icon: "plus",
+                        isDisabled: trimmedName.isEmpty,
+                        action: createVibe
+                    )
                     SecondaryGhostButton(title: OnboardingCopy.step4SecondaryCta, action: onLater)
                 }
                 .padding(.top, 4)
             }
         }
+        .onAppear {
+            DispatchQueue.main.async {
+                isNameFocused = true
+            }
+        }
+    }
+
+    private func createVibe() {
+        guard !trimmedName.isEmpty else { return }
+        onCreate(trimmedName)
     }
 }
 

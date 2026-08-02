@@ -32,12 +32,13 @@ final class OnboardingViewTests: XCTestCase {
 
     func test_step4Copy_matchesSpec() {
         XCTAssertEqual(OnboardingCopy.step4Eyebrow, "LAST STEP · 4 OF 4")
-        XCTAssertEqual(OnboardingCopy.step4Title, "Add your first mood.")
+        XCTAssertEqual(OnboardingCopy.step4Title, "What's your Vibe?")
         XCTAssertEqual(
             OnboardingCopy.step4Body,
-            "Everyday is your starter mood, empty and ready. Import a few photos for each part of the day, or add more moods anytime from Settings."
+            "Name the feeling you want on your desktop. You can change it or create more Vibes anytime."
         )
-        XCTAssertEqual(OnboardingCopy.step4PrimaryCta, "Add Your First Mood")
+        XCTAssertEqual(OnboardingCopy.step4NamePlaceholder, "Cozy Weekend, Deep Focus, Dreamy Escape…")
+        XCTAssertEqual(OnboardingCopy.step4PrimaryCta, "Create My Vibe")
         XCTAssertEqual(OnboardingCopy.step4SecondaryCta, "I'll do this later")
     }
 
@@ -49,7 +50,7 @@ final class OnboardingViewTests: XCTestCase {
             OnboardingCopy.step4Eyebrow, OnboardingCopy.step4Title, OnboardingCopy.step4Body,
             OnboardingCopy.step1Cta, OnboardingCopy.step2Cta,
             OnboardingCopy.step3PrimaryCta, OnboardingCopy.step3SecondaryCta, OnboardingCopy.step3ContinueCta,
-            OnboardingCopy.step4PrimaryCta, OnboardingCopy.step4SecondaryCta,
+            OnboardingCopy.step4NamePlaceholder, OnboardingCopy.step4PrimaryCta, OnboardingCopy.step4SecondaryCta,
             OnboardingCopy.skipLink, OnboardingCopy.backLink
         ]
         for s in allStrings {

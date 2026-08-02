@@ -174,15 +174,19 @@ struct HorizonGlassCard: ViewModifier {
     }
 
     private var backgroundMaterial: AnyShapeStyle {
+        // Cards sit on top of the window's behind-window vibrancy, so every
+        // card material composites *over* the blurred desktop rather than
+        // replacing it. Keeping these thin is what lets the wallpaper keep
+        // reading through the content area instead of stacking into fog.
         switch style {
         case .subtle:
-            return AnyShapeStyle(.ultraThinMaterial)
+            return AnyShapeStyle(.ultraThinMaterial.opacity(0.5))
         case .standard:
-            return AnyShapeStyle(.thinMaterial)
+            return AnyShapeStyle(.ultraThinMaterial.opacity(0.7))
         case .elevated:
             return AnyShapeStyle(.ultraThinMaterial)
         case .vibrant:
-            return AnyShapeStyle(.regularMaterial)
+            return AnyShapeStyle(.thinMaterial)
         }
     }
 

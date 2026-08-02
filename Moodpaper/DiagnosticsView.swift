@@ -314,12 +314,12 @@ struct DiagnosticsView: View {
             detail: focusEnabled ? "Enabled: switches to \(focusSlot) during meetings" : "Disabled"
         ))
 
-        // Mood
+        // Vibe
         let activeMoodName = await MainActor.run { MoodStore.shared.activeMood?.name }
         results.append(DiagResult(
-            name: "Mood",
+            name: "Vibe",
             status: .info,
-            detail: activeMoodName.map { "\"\($0)\" is active" } ?? "No mood active"
+            detail: activeMoodName.map { "\"\($0)\" is active" } ?? "No Vibe active"
         ))
 
         // Behavioral Engine
@@ -368,6 +368,7 @@ struct DiagnosticsView: View {
         let hasWeather = await MainActor.run { weatherService.currentWeather != nil }
         let isLoading = await MainActor.run { weatherService.isLoading }
         let weatherError = await MainActor.run { weatherService.error }
+        let lastSuccessfulAt = await MainActor.run { weatherService.lastSuccessfulAt }
 
         if isLoading {
             results.append(DiagResult(
@@ -378,8 +379,10 @@ struct DiagnosticsView: View {
         } else if let error = weatherError {
             results.append(DiagResult(
                 name: "Weather data",
-                status: .fail,
-                detail: "Error: \(error.localizedDescription)"
+                status: hasWeather ? .warn : .fail,
+                detail: hasWeather
+                    ? "Last refresh failed; showing saved weather. Error: \(error.localizedDescription)"
+                    : "Error: \(error.localizedDescription)"
             ))
         } else if hasWeather {
             let temp = await MainActor.run { weatherService.currentWeather?.temperatureFahrenheit ?? 0 }
@@ -405,6 +408,12 @@ struct DiagnosticsView: View {
             detail: dataSource == "weatherkit" ? "Using Apple WeatherKit"
                   : dataSource == "open-meteo" ? "Using Open-Meteo fallback (WeatherKit unavailable)"
                   : "No weather data fetched yet"
+        ))
+
+        results.append(DiagResult(
+            name: "Last weather update",
+            status: lastSuccessfulAt == nil ? .warn : .info,
+            detail: lastSuccessfulAt?.formatted(date: .abbreviated, time: .standard) ?? "No successful weather update recorded"
         ))
 
         return results
@@ -686,6 +695,8 @@ private struct DiagActionsCard: View {
         lines.append("")
         lines.append("Runtime")
         lines.append("Weather source: \(HorizonWeatherService.shared.source)")
+        lines.append("Last weather update: \(HorizonWeatherService.shared.lastSuccessfulAt?.formatted(date: .abbreviated, time: .standard) ?? "none")")
+        lines.append("Last weather failure: \(HorizonWeatherService.shared.lastFailureDescription ?? "none")")
         lines.append("Focus preference: \(WallpaperManager.shared.focusModePreference)")
         lines.append("Focus enabled: \(WallpaperManager.shared.focusModeEnabled)")
         lines.append("In meeting: \(CalendarService.shared.isInMeeting)")

@@ -40,8 +40,8 @@ struct WallpaperHistoryEntry: Codable, Identifiable {
     static func triggerDisplayName(for trigger: String?) -> String {
         switch trigger {
         case "scheduledTick": return "Schedule"
-        case "moodChange": return "Mood"
-        case "vibeChange": return "Mood"   // legacy persisted history entries
+        case "moodChange": return "Vibe"
+        case "vibeChange": return "Vibe"   // legacy persisted history entries
         case "activeSpaceDidChange": return "Space"
         case "manual", "restoreHistoryEntry": return "Manual"
         case .some(let value) where value.hasPrefix("weather"):
@@ -65,6 +65,12 @@ enum HistoryRestoreResolution: Equatable {
 enum ReconciledWallpaperState: Equatable {
     case live(primaryName: String, primaryIdentifier: String, identifiersByScreen: [String: String])
     case storedFallback(primaryName: String, primaryIdentifier: String?)
+}
+
+enum DesktopApplyConfirmationDecision: Equatable {
+    case waiting
+    case confirmed
+    case timedOut
 }
 
 nonisolated fileprivate struct SendableScreen: @unchecked Sendable {
@@ -102,6 +108,39 @@ extension WallpaperManager {
     ) -> TimeInterval {
         let safe = max(globalWallpapersPerDay, 1)
         return TimeInterval(86400 / safe)
+    }
+
+    /// Decides whether the system-reported desktop state has caught up with
+    /// the URLs Moodpaper asked AppKit to apply. Kept pure so the synchronization
+    /// contract can be tested without changing a real desktop wallpaper.
+    static func desktopApplyConfirmationDecision(
+        expectedURLsByScreen: [String: URL],
+        liveURLsByScreen: [String: URL],
+        elapsed: TimeInterval,
+        timeout: TimeInterval
+    ) -> DesktopApplyConfirmationDecision {
+        let everyDisplayMatches = !expectedURLsByScreen.isEmpty && expectedURLsByScreen.allSatisfy { screenName, expectedURL in
+            guard let liveURL = liveURLsByScreen[screenName] else { return false }
+            return liveURL.standardizedFileURL.path == expectedURL.standardizedFileURL.path
+        }
+
+        if everyDisplayMatches { return .confirmed }
+        if elapsed >= timeout { return .timedOut }
+        return .waiting
+    }
+
+    /// Absolute times, measured from the setter returning, when Moodpaper
+    /// should ask macOS whether every display has caught up. Each read crosses
+    /// into WallpaperAgent, so checking every frame or every 100 ms can delay
+    /// the change it is trying to observe. These checkpoints stay responsive
+    /// around the normal completion window without flooding the system service.
+    static func desktopApplyConfirmationCheckpoints(
+        timeout: TimeInterval
+    ) -> [TimeInterval] {
+        guard timeout > 0 else { return [] }
+
+        let preferredCheckpoints: [TimeInterval] = [0.5, 1.5, 3, 5, 7, 9, 12, 16]
+        return preferredCheckpoints.filter { $0 < timeout } + [timeout]
     }
 }
 
@@ -1106,8 +1145,9 @@ class WallpaperManager: ObservableObject {
     ) {
         activeSlot = slot  // HZN-003: captured by setWallpaper(url:) for independent display mode
 
-        // Selection reads exactly one source: the active Mood's folder for
-        // this slot. The user decides the mood; the engine only remembers it.
+        // Selection reads the active Mood's slot-specific pool first, then
+        // falls back to its shared All Day pool. The user decides the mood;
+        // the engine only remembers it.
         guard let url = moodWallpaperURL(for: slot) else {
             // Empty-slot rule: keep whatever is on screen until a slot that
             // has images comes around. Never an error — an empty slot is a
@@ -1118,13 +1158,13 @@ class WallpaperManager: ObservableObject {
         setWallpaper(url: url)
     }
 
-    /// Random pick from the active Mood's folder for `slot`, or nil when the
-    /// slot is empty (the caller holds the current wallpaper). Single source
-    /// of truth for both the primary apply and independent-display picks.
+    /// Random pick from the active Mood's effective pool for `slot`, or nil
+    /// when both the slot and All Day are empty (the caller holds the current
+    /// wallpaper). Single source of truth for primary and independent picks.
     private func moodWallpaperURL(for slot: String) -> URL? {
         let timeSlot = timeSlotFromString(slot)
         let pool = MoodStore.shared.activeMood.map {
-            MoodStore.shared.wallpapers(for: timeSlot, in: $0).map(\.path)
+            MoodStore.shared.effectiveWallpapers(for: timeSlot, in: $0).map(\.path)
         } ?? []
         switch Self.resolveWallpaperSource(moodPoolIsEmpty: pool.isEmpty) {
         case .holdCurrent: return nil
@@ -1300,11 +1340,9 @@ class WallpaperManager: ObservableObject {
         let trigger = applyTriggerContext ?? "manual"
         let pendingSlot = self.pendingHistorySlot
 
-        // Heavy lifting (multi-MB file copy + per-screen setDesktopImageURL)
-        // moves off the main thread. The prior synchronous version was the
-        // root cause of the spinning beach ball when skipping wallpapers on
-        // multi-display setups. State writes still happen on main when the
-        // apply completes.
+        // Multi-MB file preparation moves off the main thread inside
+        // applyWallpapers. Apple's desktop-image getter and setter remain on
+        // the main actor, as required by AppKit.
         Task { @MainActor [weak self] in
             guard let self else { return }
             let applied = await self.applyWallpapers(
@@ -1531,45 +1569,13 @@ class WallpaperManager: ObservableObject {
             )
         }
 
-        // Off-main: call NSWorkspace.setDesktopImageURL per screen, in
-        // parallel. NSWorkspace methods are documented thread-safe; moving
-        // this loop off main is the actual fix for the multi-display Skip
-        // beach ball. Each task is independent until rollback time.
-        let applyResults: [WallpaperScreenApplyResult] = await withTaskGroup(of: WallpaperScreenApplyResult.self) { group in
-            for job in jobs {
-                let captured = job
-                group.addTask(priority: .utility) {
-                    let taskStart = CFAbsoluteTimeGetCurrent()
-                    let outcome: Result<Void, NSError>
-                    do {
-                        try NSWorkspace.shared.setDesktopImageURL(
-                            captured.preparedURL,
-                            for: captured.screen.value,
-                            options: captured.options
-                        )
-                        outcome = .success(())
-                    } catch let error as NSError {
-                        outcome = .failure(error)
-                    }
-                    let taskEnd = CFAbsoluteTimeGetCurrent()
-                    return WallpaperScreenApplyResult(
-                        name: captured.name,
-                        preparedURL: captured.preparedURL,
-                        preparedFilename: captured.preparedURL.lastPathComponent,
-                        displayID: captured.displayID,
-                        modeDescription: captured.modeDescription,
-                        outcome: outcome,
-                        startOffsetMs: Int(((taskStart - applyStart) * 1000).rounded()),
-                        callDurationMs: Int(((taskEnd - taskStart) * 1000).rounded())
-                    )
-                }
-            }
-            var collected: [WallpaperScreenApplyResult] = []
-            for await item in group {
-                collected.append(item)
-            }
-            return collected
-        }
+        // AppKit requires the desktop-image setter on the main thread. The
+        // prepared files are already ready, so these calls only submit the
+        // three lightweight per-display requests to WallpaperAgent.
+        let applyResults = Self.applyWallpaperJobsOnMainActor(
+            jobs,
+            applyStart: applyStart
+        )
 
         // Back on main: update bookkeeping, log per-screen outcomes, and
         // roll back successful screens if any peer failed (preserves the
@@ -1627,15 +1633,115 @@ class WallpaperManager: ObservableObject {
             return false
         }
 
+        // AppKit's setter can return before WallpaperAgent publishes the new
+        // per-screen desktop URLs. Keep the cards on the old image until the
+        // public desktopImageURL API reports that every display caught up.
+        // This is condition-based and normally exits immediately after the OS
+        // update; the timeout is only a safety valve if the service stalls.
+        let confirmed = await waitForDesktopApplyConfirmation(
+            expectedURLsByScreen: preparedURLsByScreen,
+            screens: screens,
+            timeout: 20
+        )
+        if !confirmed {
+            HorizonDebugLog.shared.log("wallpaper.apply.confirmationTimeout", fields: [
+                "trigger": trigger,
+                "timeoutSeconds": 20,
+                "screens": screens.count
+            ])
+        }
+
         let durationMs = (CFAbsoluteTimeGetCurrent() - applyStart) * 1000
         AppPerformanceMetrics.shared.recordWallpaperApply(durationMs: durationMs)
         HorizonDebugLog.shared.log("wallpaper.apply.summary", fields: [
             "trigger": trigger,
             "durationMs": Int(durationMs.rounded()),
             "screens": screens.count,
+            "confirmed": confirmed,
             "lastAppliedByScreen": Self.debugURLSummary(desiredURLPerScreen)
         ])
-        return true
+        return confirmed
+    }
+
+    @MainActor
+    private static func applyWallpaperJobsOnMainActor(
+        _ jobs: [WallpaperScreenApplyJob],
+        applyStart: CFAbsoluteTime
+    ) -> [WallpaperScreenApplyResult] {
+        jobs.map { job in
+            let taskStart = CFAbsoluteTimeGetCurrent()
+            let outcome: Result<Void, NSError>
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(
+                    job.preparedURL,
+                    for: job.screen.value,
+                    options: job.options
+                )
+                outcome = .success(())
+            } catch let error as NSError {
+                outcome = .failure(error)
+            }
+            let taskEnd = CFAbsoluteTimeGetCurrent()
+            return WallpaperScreenApplyResult(
+                name: job.name,
+                preparedURL: job.preparedURL,
+                preparedFilename: job.preparedURL.lastPathComponent,
+                displayID: job.displayID,
+                modeDescription: job.modeDescription,
+                outcome: outcome,
+                startOffsetMs: Int(((taskStart - applyStart) * 1000).rounded()),
+                callDurationMs: Int(((taskEnd - taskStart) * 1000).rounded())
+            )
+        }
+    }
+
+    @MainActor
+    private func waitForDesktopApplyConfirmation(
+        expectedURLsByScreen: [String: URL],
+        screens: [NSScreen],
+        timeout: TimeInterval
+    ) async -> Bool {
+        let startedAt = CFAbsoluteTimeGetCurrent()
+
+        for checkpoint in Self.desktopApplyConfirmationCheckpoints(timeout: timeout) {
+            guard !Task.isCancelled else { return false }
+
+            let elapsedBeforeSleep = CFAbsoluteTimeGetCurrent() - startedAt
+            let remainingDelay = checkpoint - elapsedBeforeSleep
+            if remainingDelay > 0 {
+                do {
+                    try await Task.sleep(
+                        nanoseconds: UInt64((remainingDelay * 1_000_000_000).rounded())
+                    )
+                } catch {
+                    return false
+                }
+            }
+
+            var liveURLsByScreen: [String: URL] = [:]
+            for screen in screens {
+                guard expectedURLsByScreen[screen.localizedName] != nil,
+                      let liveURL = NSWorkspace.shared.desktopImageURL(for: screen) else { continue }
+                liveURLsByScreen[screen.localizedName] = liveURL
+            }
+
+            let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
+            switch Self.desktopApplyConfirmationDecision(
+                expectedURLsByScreen: expectedURLsByScreen,
+                liveURLsByScreen: liveURLsByScreen,
+                elapsed: elapsed,
+                timeout: timeout
+            ) {
+            case .confirmed:
+                return true
+            case .timedOut:
+                return false
+            case .waiting:
+                continue
+            }
+        }
+
+        return false
     }
 
     /// Single entry point for refreshing the shared `currentPreviewImage`

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreLocation
 import WeatherKit
 internal import Combine
 
@@ -73,9 +74,7 @@ struct DashboardView: View {
                 .frame(height: 260)
                 .padding(.horizontal, HorizonSpacing.xxxl)
                 .task {
-                    // fetchWeather is triggered automatically by HorizonWeatherService
-                    // via its Combine subscription on LocationService.currentLocation.
-                    // No manual call needed here.
+                    await weatherService.refreshWeather(reason: "dashboardAppeared")
                 }
 
                 // Stats Row
@@ -287,6 +286,7 @@ private struct WeatherCard: View {
     @AppStorage("useDeviceLocation") private var useDeviceLocation: Bool = true
     @StateObject private var userWallpaperManager = UserWallpaperManager.shared
     @ObservedObject private var moodStore = MoodStore.shared
+    @ObservedObject private var locationService = LocationService.shared
 
     private var accentColors: [Color] {
         switch weatherTone {
@@ -366,9 +366,6 @@ private struct WeatherCard: View {
         return "\(Int(temp.rounded()))°"
     }
     private var conditionText: String {
-        if weatherService.error != nil {
-            return "Using time-based wallpaper changes"
-        }
         return weatherService.weatherDescription.components(separatedBy: ",").first ?? "Loading weather..."
     }
     private var windText: String {
@@ -404,15 +401,61 @@ private struct WeatherCard: View {
     private var humidityText: String { weatherService.currentWeather?.humidity.map { "\(Int($0 * 100))%" } ?? "--" }
     private var statusNote: String? {
         if !useDeviceLocation {
-            return "Location off. Using approximate daylight timing."
+            return "Turn on location for local weather."
         }
         if !runtimeState.locationAuthorized {
-            return "Location unavailable. Using approximate daylight timing."
+            return "Location access is needed for local weather."
+        }
+        if weatherService.isLoading && weatherService.currentWeather == nil {
+            return "Refreshing local weather…"
         }
         if weatherService.error != nil {
-            return "Weather unavailable."
+            return weatherService.currentWeather == nil
+                ? "Weather unavailable."
+                : "Last update failed. Showing saved weather."
         }
         return nil
+    }
+
+    private var recoveryActionTitle: String? {
+        if weatherService.isLoading {
+            return weatherService.currentWeather == nil ? "Refreshing…" : nil
+        }
+        if !useDeviceLocation {
+            return "Use Location"
+        }
+        switch locationService.authorizationStatus {
+        case .notDetermined:
+            return "Enable Location"
+        case .denied, .restricted:
+            return "Open Location Settings"
+        default:
+            return weatherService.error != nil || weatherService.currentWeather == nil
+                ? "Retry Weather"
+                : nil
+        }
+    }
+
+    private func recoverWeather() {
+        if !useDeviceLocation {
+            useDeviceLocation = true
+            locationService.startUpdatingLocation(requestPermissionIfNeeded: true)
+            return
+        }
+
+        switch locationService.authorizationStatus {
+        case .notDetermined:
+            locationService.startUpdatingLocation(requestPermissionIfNeeded: true)
+        case .denied, .restricted:
+            guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") else {
+                return
+            }
+            NSWorkspace.shared.open(url)
+        default:
+            Task {
+                await weatherService.refreshWeather(reason: "manualRetry", force: true)
+            }
+        }
     }
 
     @ViewBuilder
@@ -478,6 +521,14 @@ private struct WeatherCard: View {
                     attributionBadge
 
                     Spacer()
+
+                    if let recoveryActionTitle {
+                        Button(recoveryActionTitle, action: recoverWeather)
+                            .font(.system(size: 11, weight: .semibold))
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(weatherService.isLoading)
+                    }
                 }
 
                 // Middle: hero content
@@ -514,8 +565,8 @@ private struct WeatherCard: View {
                     MetricChip(label: "Feels Like", value: feelsLikeText, icon: "thermometer", foregroundColor: chipForegroundColor)
                     Spacer()
                     MetricChip(
-                        label: "Mood",
-                        value: moodStore.activeMood?.name ?? "None",
+                        label: "Vibe",
+                        value: moodStore.activeMood?.name ?? "None Yet",
                         icon: "paintpalette.fill",
                         foregroundColor: chipForegroundColor
                     )
@@ -590,7 +641,6 @@ private struct CurrentWallpaperCard: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject private var moodStore = MoodStore.shared
     @State private var isHovered = false
-    @State private var isSkipping = false
     @State private var hostingScreen: NSScreen?
     @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation: Bool = false
     @State private var showingUnpinAlert = false
@@ -704,25 +754,26 @@ private struct CurrentWallpaperCard: View {
 
                     Spacer()
 
-                    Button(action: {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            isSkipping = true
-                        }
-
+                    Button {
                         wallpaperManager.skipToNext()
-                        if !wallpaperManager.isChangingWallpaper {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                isSkipping = false
+                    } label: {
+                        HStack(spacing: 5) {
+                            if wallpaperManager.isChangingWallpaper {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(.white)
+                                    .accessibilityHidden(true)
+                                Text("Changing…")
+                                    .font(.system(size: 12, weight: .semibold))
+                            } else {
+                                Image(systemName: "forward.fill")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("Skip")
+                                    .font(.system(size: 12, weight: .semibold))
                             }
                         }
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "forward.fill")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text("Skip")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
                         .foregroundColor(.white)
+                        .frame(minWidth: 62)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(
@@ -737,9 +788,17 @@ private struct CurrentWallpaperCard: View {
                         .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Skip to next wallpaper")
-                    .scaleEffect(isSkipping ? 0.9 : 1.0)
-                    .opacity(isSkipping ? 0.6 : 1.0)
+                    .disabled(wallpaperManager.isChangingWallpaper)
+                    .accessibilityLabel(
+                        wallpaperManager.isChangingWallpaper
+                            ? "Changing wallpaper"
+                            : "Skip to next wallpaper"
+                    )
+                    .help(
+                        wallpaperManager.isChangingWallpaper
+                            ? "Changing wallpaper"
+                            : "Skip to next wallpaper"
+                    )
                     .padding(10)
                 }
 
@@ -784,12 +843,6 @@ private struct CurrentWallpaperCard: View {
         }
         .onChange(of: hostingScreen?.localizedName) { _, _ in
             deferWallpaperPreviewRefresh()
-        }
-        .onChange(of: wallpaperManager.isChangingWallpaper) { _, isChanging in
-            guard !isChanging else { return }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                isSkipping = false
-            }
         }
         .onAppear {
             deferWallpaperSyncAndPreviewRefresh()
@@ -915,16 +968,16 @@ private struct MoodToggleCard: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Mood")
+                    Text(store.activeMood == nil ? "Vibe" : "Current Vibe")
                         .font(HorizonTypography.caption)
                         .foregroundColor(HorizonColors.textSecondary)
 
-                    Text(store.activeMood?.name ?? "None")
+                    Text(store.activeMood?.name ?? "No Vibe Yet")
                         .font(HorizonTypography.title2)
                         .fontWeight(.semibold)
                         .foregroundColor(HorizonColors.textPrimary)
 
-                    Text(store.activeMood != nil ? "Active" : "No mood set")
+                    Text(store.activeMood != nil ? "Switch anytime" : "Create your first Vibe")
                         .font(HorizonTypography.caption2)
                         .foregroundColor(HorizonColors.textTertiary)
                 }

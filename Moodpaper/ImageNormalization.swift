@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 ///
 /// Compression quality is 0.92: visually lossless for photographs, keeps file
 /// sizes reasonable under the 750 MB user-imported cap.
-func writeNormalizedImage(from sourceURL: URL, to destinationURL: URL) throws {
+nonisolated func writeNormalizedImage(from sourceURL: URL, to destinationURL: URL) throws {
     guard let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
           let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
         throw NSError(domain: "HorizonImageNormalization", code: -1, userInfo: [
