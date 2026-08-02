@@ -1394,7 +1394,11 @@ private struct HorizonSidebar: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background {
-            VibrantBackground(material: .sidebar)
+            // Matches the root material. `.sidebar` renders as a near-opaque
+            // panel in Dark Mode, which left the rail flat while the content
+            // area stayed translucent; sharing one material keeps them coherent
+            // in both appearances.
+            VibrantBackground(material: .hudWindow)
                 .overlay(
                     UnevenRoundedRectangle(
                         topLeadingRadius: 12,
