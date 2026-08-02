@@ -1,27 +1,27 @@
 # Moodpaper
 
-**Your photos, your moods.**
+**Your photos, your Vibes.**
 
-Moodpaper is a free, open-source macOS menu bar app that changes your desktop wallpaper throughout the day using your own photos. Assign images to parts of the day, group those assignments into named Moods, and switch your desktop's personality in one click.
+Moodpaper is a free, open-source macOS menu bar app that changes your desktop wallpaper throughout the day using your own photos. Assign images to parts of the day, group those assignments into named Vibes, and switch your desktop's personality in one click.
 
 Moodpaper is a direct download, not a Mac App Store product. It has no account, paywall, subscription, Premium tier, in-app purchase, or bundled wallpaper library. An optional Buy Me a Coffee link supports development without unlocking features.
 
 ## Features
 
-- **Your photos:** Import individual images, drag in files, or load an entire folder into a Mood. Moodpaper copies supported images into its sandboxed Application Support folder.
+- **Your photos:** Import individual images, drag in files, or load an entire folder into a Vibe. Moodpaper copies supported images into its sandboxed Application Support folder.
 - **Nine time slots:** Deep Night, Dawn, Sunrise, Morning, Midday, Afternoon, Golden Hour, Dusk, and Evening.
-- **All Day wallpaper pool:** Give each Mood one shared pool that works immediately across the whole day, then add time-specific favorites whenever you want.
-- **Named Moods:** Create, rename, duplicate, delete, activate, and customize complete wallpaper collections. New Moods flow directly into wallpaper import.
+- **All Day wallpaper pool:** Give each Vibe one shared pool that works immediately across the whole day, then add time-specific favorites whenever you want.
+- **Named Vibes:** Start with a blank slate, playfully name your first Vibe, then create, rename, duplicate, delete, activate, and customize complete wallpaper collections. New Vibes flow directly into wallpaper import.
 - **Automatic scheduling:** Move through the day using configurable time slots and local sunrise and sunset timing.
-- **Safe empty slots:** A time slot uses its own images when available, falls back to the Mood's All Day pool, and holds the current wallpaper only when both are empty.
-- **Weather display:** Show local weather in the dashboard without letting weather choose your wallpaper.
+- **Safe empty slots:** A time slot uses its own images when available, falls back to the Vibe's All Day pool, and holds the current wallpaper only when both are empty.
+- **Resilient weather display:** Refresh local weather at launch, after wake and app activation, and on demand without letting weather choose your wallpaper. Moodpaper keeps a recent successful reading visible during temporary provider failures and retries automatically.
 - **Focus Mode:** Optionally use calendar access to apply your Focus wallpapers during meetings.
 - **Multiple displays and Spaces:** Keep wallpaper behavior consistent across connected displays and macOS Spaces.
 - **Local history and controls:** Review recent changes, pause rotation, and use keyboard shortcuts. Skip shows a transition state and updates the cards only after macOS confirms the connected displays.
 
 ## Privacy
 
-Your photos, Moods, preferences, history, and diagnostics stay on your Mac. Moodpaper has no account system, backend, advertising SDK, or transmitted analytics. Network access is used for the dashboard's weather data. Location and calendar access are optional and controlled through macOS privacy settings.
+Your photos, Vibes, preferences, history, and diagnostics stay on your Mac. Moodpaper has no account system, backend, advertising SDK, or transmitted analytics. When Device Location is enabled and authorized, location coordinates are sent to Apple WeatherKit or, if WeatherKit fails, Open-Meteo to retrieve local weather. Location and calendar access are optional and controlled through macOS privacy settings.
 
 ## Requirements
 

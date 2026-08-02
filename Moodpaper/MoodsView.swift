@@ -1,8 +1,8 @@
 import SwiftUI
 
-// MARK: - Moods section
+// MARK: - Vibes section
 
-// The Moodpaper switcher: every Mood is a named set of wallpaper
+// The Moodpaper switcher: every Vibe is a named set of wallpaper
 // assignments, and this grid is where the user creates, renames, duplicates,
 // deletes, and activates them. All Day provides the simple shared pool, while
 // the Library offers optional per-slot overrides.
@@ -18,7 +18,7 @@ struct MoodsView: View {
             VStack(alignment: .leading, spacing: HorizonSpacing.lg) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
-                        Text("Moods")
+                        Text("Vibes")
                             .font(HorizonTypography.title2)
                             .foregroundColor(HorizonColors.textPrimary)
                         Text("Switch your whole desktop personality in one click.")
@@ -29,39 +29,45 @@ struct MoodsView: View {
                     Button {
                         showingCreateSheet = true
                     } label: {
-                        Label("New Mood", systemImage: "plus")
+                        Label("New Vibe", systemImage: "plus")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(HorizonColors.secondaryAccent)
                 }
 
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: HorizonSpacing.md),
-                        GridItem(.flexible(), spacing: HorizonSpacing.md)
-                    ],
-                    spacing: HorizonSpacing.md
-                ) {
-                    ForEach(store.moods) { mood in
-                        MoodCard(
-                            mood: mood,
-                            isActive: store.activeMoodID == mood.id,
-                            onActivate: {
-                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                                    store.activate(mood)
-                                }
-                            },
-                            onAddWallpapers: {
-                                importRequest = MoodImportRequest(mood: mood, initialPicker: nil)
-                            },
-                            onChooseFolder: {
-                                importRequest = MoodImportRequest(mood: mood, initialPicker: .folder)
-                            },
-                            onChoosePhotos: {
-                                importRequest = MoodImportRequest(mood: mood, initialPicker: .photos)
-                            },
-                            onEdit: { editingMood = mood }
-                        )
+                if store.moods.isEmpty {
+                    EmptyVibesCard {
+                        showingCreateSheet = true
+                    }
+                } else {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: HorizonSpacing.md),
+                            GridItem(.flexible(), spacing: HorizonSpacing.md)
+                        ],
+                        spacing: HorizonSpacing.md
+                    ) {
+                        ForEach(store.moods) { mood in
+                            MoodCard(
+                                mood: mood,
+                                isActive: store.activeMoodID == mood.id,
+                                onActivate: {
+                                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                                        store.activate(mood)
+                                    }
+                                },
+                                onAddWallpapers: {
+                                    importRequest = MoodImportRequest(mood: mood, initialPicker: nil)
+                                },
+                                onChooseFolder: {
+                                    importRequest = MoodImportRequest(mood: mood, initialPicker: .folder)
+                                },
+                                onChoosePhotos: {
+                                    importRequest = MoodImportRequest(mood: mood, initialPicker: .photos)
+                                },
+                                onEdit: { editingMood = mood }
+                            )
+                        }
                     }
                 }
 
@@ -86,6 +92,37 @@ struct MoodsView: View {
                 initialPicker: request.initialPicker
             )
         }
+    }
+}
+
+private struct EmptyVibesCard: View {
+    let onCreate: () -> Void
+
+    var body: some View {
+        VStack(spacing: HorizonSpacing.md) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(HorizonColors.secondaryAccent.gradient)
+                .accessibilityHidden(true)
+
+            VStack(spacing: HorizonSpacing.xs) {
+                Text("What's your Vibe?")
+                    .font(HorizonTypography.title2)
+                    .foregroundColor(HorizonColors.textPrimary)
+                Text("Create a feeling for your desktop, then fill it with wallpapers you love.")
+                    .font(HorizonTypography.callout)
+                    .foregroundColor(HorizonColors.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button(action: onCreate) {
+                Label("Create Your First Vibe", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(HorizonColors.secondaryAccent)
+        }
+        .frame(maxWidth: .infinity, minHeight: 260)
+        .horizonGlassCard(style: .standard, padding: HorizonSpacing.xl)
     }
 }
 
@@ -150,7 +187,7 @@ struct MoodCard: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help("Edit mood")
+                    .help("Edit Vibe")
                     .accessibilityLabel("Edit \(mood.name)")
                 }
 
@@ -241,7 +278,7 @@ struct MoodEditorSheet: View {
                 name = mood.name
             }
         }
-        .alert("Delete this Mood?", isPresented: $showingDeleteConfirm) {
+        .alert("Delete this Vibe?", isPresented: $showingDeleteConfirm) {
             Button("Delete", role: .destructive) {
                 if let mood = editingMood {
                     store.delete(mood)
@@ -256,16 +293,30 @@ struct MoodEditorSheet: View {
 
     private var editorContent: some View {
         VStack(alignment: .leading, spacing: HorizonSpacing.lg) {
-            Text(isCreate ? "Name Your Mood" : "Edit Mood")
+            Text(isCreate ? "Name Your Vibe" : "Edit Vibe")
                 .font(HorizonTypography.title3)
                 .foregroundColor(HorizonColors.textPrimary)
 
             VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
-                Text("Name")
+                Text("Vibe name")
                     .font(HorizonTypography.caption)
                     .foregroundColor(HorizonColors.textSecondary)
-                TextField("Work Week, Cozy Weekend...", text: $name)
+                TextField(OnboardingCopy.step4NamePlaceholder, text: $name)
                     .textFieldStyle(.roundedBorder)
+            }
+
+            if isCreate {
+                HStack(spacing: HorizonSpacing.xs) {
+                    ForEach(VibeNaming.suggestions, id: \.self) { suggestion in
+                        Button(suggestion) {
+                            name = suggestion
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Vibe name suggestions")
             }
 
             if let mood = editingMood {
@@ -274,7 +325,7 @@ struct MoodEditorSheet: View {
                         store.duplicate(mood)
                         dismiss()
                     }
-                    Button("Delete Mood", role: .destructive) {
+                    Button("Delete Vibe", role: .destructive) {
                         showingDeleteConfirm = true
                     }
                 }
@@ -286,7 +337,7 @@ struct MoodEditorSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(isCreate ? "Create" : "Save") {
+                Button(isCreate ? "Create Vibe" : "Save") {
                     if let mood = editingMood {
                         store.rename(mood, to: trimmedName)
                         dismiss()
@@ -301,6 +352,6 @@ struct MoodEditorSheet: View {
             }
         }
         .padding(HorizonSpacing.xl)
-        .frame(width: 380, height: 260)
+        .frame(width: 420, height: isCreate ? 320 : 260)
     }
 }

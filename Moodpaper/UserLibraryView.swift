@@ -3,8 +3,8 @@ import AppKit
 import UniformTypeIdentifiers
 import ImageIO
 
-// The Library edits the ACTIVE mood: All Day is its shared fallback pool, and
-// each time-slot card can add an override. Switching moods swaps the complete
+// The Library edits the active Vibe: All Day is its shared fallback pool, and
+// each time-slot card can add an override. Switching Vibes swaps the complete
 // assignment set these cards show.
 struct UserLibraryView: View {
     var searchText: String = ""
@@ -46,7 +46,9 @@ struct UserLibraryView: View {
 
                 Spacer()
 
-                Text("Start with All Day, then customize any time slot")
+                Text(store.activeMood == nil
+                     ? "Create a Vibe to start adding wallpapers"
+                     : "Start with All Day, then customize any time slot")
                     .font(HorizonTypography.callout)
                     .foregroundColor(HorizonColors.textSecondary)
             }
@@ -54,9 +56,32 @@ struct UserLibraryView: View {
             .padding(.top, HorizonSpacing.xl)
             .padding(.bottom, HorizonSpacing.lg)
 
-            // Empty-mood banner — the landing spot for onboarding's "Add
-            // Your First Mood" CTA, so a brand-new mood explains itself.
-            if let mood = store.activeMood, isActiveMoodEmpty {
+            if store.activeMood == nil {
+                VStack(spacing: HorizonSpacing.md) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 32, weight: .semibold))
+                        .foregroundStyle(HorizonColors.secondaryAccent.gradient)
+                        .accessibilityHidden(true)
+                    Text("Your wallpapers need a Vibe")
+                        .font(HorizonTypography.title2)
+                        .foregroundColor(HorizonColors.textPrimary)
+                    Text("Give your desktop a feeling first. Then add a folder or choose photos one by one.")
+                        .font(HorizonTypography.callout)
+                        .foregroundColor(HorizonColors.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        NotificationCenter.default.post(name: .navigateToMoods, object: nil)
+                    } label: {
+                        Label("Create Your First Vibe", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(HorizonColors.secondaryAccent)
+                }
+                .frame(maxWidth: .infinity, minHeight: 260)
+                .horizonGlassCard(style: .standard, padding: HorizonSpacing.xl)
+                .padding(.horizontal, HorizonSpacing.xxxl)
+                .padding(.bottom, HorizonSpacing.xxxl)
+            } else if let mood = store.activeMood, isActiveMoodEmpty {
                 HStack(spacing: HorizonSpacing.md) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 16, weight: .semibold))

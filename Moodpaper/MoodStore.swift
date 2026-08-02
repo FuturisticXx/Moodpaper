@@ -42,7 +42,6 @@ final class MoodStore: ObservableObject {
     static let shared = MoodStore()
 
     static let activeMoodIDKey = "moods.activeID"
-    static let starterMoodName = "Everyday"
     static let allDayFolderName = "AllDay"
 
     private nonisolated static let supportedImageExtensions: Set<String> = [
@@ -74,7 +73,7 @@ final class MoodStore: ObservableObject {
             .appendingPathComponent("Moodpaper")
         self.moodsRootURL = base.appendingPathComponent("Moods")
         load()
-        ensureStarterMood()
+        restoreActiveMoodIfNeeded()
     }
 
     // MARK: - Read helpers
@@ -171,6 +170,9 @@ final class MoodStore: ObservableObject {
             withIntermediateDirectories: true
         )
         save()
+        if activeMoodID == nil {
+            setActiveMoodID(mood.id)
+        }
         AnalyticsManager.shared.log(.moodCreated, metadata: ["id": mood.id])
         return mood
     }
@@ -213,8 +215,7 @@ final class MoodStore: ObservableObject {
     }
 
     /// Delete a mood and its files. The active mood falls back to the first
-    /// remaining mood; deleting the last mood recreates the starter so the
-    /// app never has zero moods.
+    /// remaining mood, or to no active mood when the user deletes the last.
     func delete(_ mood: Mood) {
         guard let idx = moods.firstIndex(where: { $0.id == mood.id }) else { return }
         moods.remove(at: idx)
@@ -223,7 +224,6 @@ final class MoodStore: ObservableObject {
             setActiveMoodID(moods.first?.id)
         }
         save()
-        ensureStarterMood()
         AnalyticsManager.shared.log(.moodDeleted, metadata: ["id": mood.id])
     }
 
@@ -396,13 +396,11 @@ final class MoodStore: ObservableObject {
         }
     }
 
-    /// Guarantee at least one mood exists and one is active. Runs at init
-    /// (first run creates the starter) and after deletes.
-    private func ensureStarterMood() {
-        if moods.isEmpty {
-            create(name: Self.starterMoodName)
-        }
-        if activeMood == nil {
+    /// Preserve existing catalogs while repairing a missing or stale active
+    /// selection. A fresh catalog intentionally stays empty until the user
+    /// creates their first Vibe.
+    private func restoreActiveMoodIfNeeded() {
+        if activeMood == nil, !moods.isEmpty {
             setActiveMoodID(moods.first?.id)
         }
     }

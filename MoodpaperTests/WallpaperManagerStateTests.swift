@@ -64,9 +64,9 @@ final class WallpaperManagerStateTests: XCTestCase {
     func testHistoryTriggerDisplayNamesAreReadable() {
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "scheduledTick"), "Schedule")
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "weatherUpdate"), "Weather")
-        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "moodChange"), "Mood")
+        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "moodChange"), "Vibe")
         // Legacy persisted entries from the pre-pivot vibe system.
-        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "vibeChange"), "Mood")
+        XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "vibeChange"), "Vibe")
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: "manual"), "Manual")
         XCTAssertEqual(WallpaperHistoryEntry.triggerDisplayName(for: nil), "Auto")
         // Raw internal ids must never reach the history UI.

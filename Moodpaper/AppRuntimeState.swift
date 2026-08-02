@@ -52,6 +52,7 @@ final class AppRuntimeState: ObservableObject {
         let shortcutsEnabled = UserDefaults.standard.bool(forKey: "shortcutsEnabled")
         GlobalShortcutManager.shared.reconcile(enabledPreference: shortcutsEnabled)
         WallpaperManager.shared.reconcileRuntimeState(reason: reason)
+        await HorizonWeatherService.shared.refreshWeather(reason: reason)
         recomputeCapabilities(reason: reason)
     }
 

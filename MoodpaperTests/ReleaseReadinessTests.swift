@@ -107,7 +107,7 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(source.contains("MoodStore.shared.effectiveWallpapers(for: timeSlot"))
     }
 
-    func testMoodCreationContinuesIntoAllDayWallpaperImport() throws {
+    func testVibeCreationContinuesIntoAllDayWallpaperImport() throws {
         let moodsSource = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodsView.swift"),
             encoding: .utf8
@@ -118,11 +118,14 @@ final class ReleaseReadinessTests: XCTestCase {
         )) ?? ""
 
         XCTAssertTrue(moodsSource.contains("MoodWallpaperImportView"))
+        XCTAssertTrue(moodsSource.contains("Text(\"Vibes\")"))
+        XCTAssertTrue(moodsSource.contains("Label(\"New Vibe\""))
+        XCTAssertTrue(moodsSource.contains("Create Your First Vibe"))
         XCTAssertTrue(moodsSource.contains("Add Wallpapers"))
         XCTAssertTrue(importSource.contains(#"Bring \(mood.name) to Life"#))
         XCTAssertTrue(importSource.contains("Choose Folder"))
         XCTAssertTrue(importSource.contains("Choose Photos"))
-        XCTAssertTrue(importSource.contains("Use This Mood"))
+        XCTAssertTrue(importSource.contains("Use This Vibe"))
         XCTAssertTrue(importSource.contains("allowedContentTypes: [.folder]"))
         XCTAssertTrue(importSource.contains("allowedContentTypes: [.image]"))
         XCTAssertTrue(importSource.contains(".onDrop(of: [.fileURL]"))

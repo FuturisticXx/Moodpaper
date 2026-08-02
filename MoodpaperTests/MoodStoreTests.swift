@@ -50,12 +50,11 @@ final class MoodStoreTests: XCTestCase {
 
     // MARK: First run
 
-    func testFirstRunCreatesAndActivatesStarterMood() {
+    func testFirstRunStartsWithoutAnyVibes() {
         let store = makeStore()
-        XCTAssertEqual(store.moods.count, 1)
-        XCTAssertEqual(store.moods.first?.name, MoodStore.starterMoodName)
-        XCTAssertEqual(store.activeMoodID, store.moods.first?.id)
-        XCTAssertNotNil(store.activeMood)
+        XCTAssertTrue(store.moods.isEmpty)
+        XCTAssertNil(store.activeMoodID)
+        XCTAssertNil(store.activeMood)
     }
 
     // MARK: Create
@@ -71,10 +70,18 @@ final class MoodStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
     }
 
+    func testCreatingFirstVibeActivatesIt() throws {
+        let store = makeStore()
+        let vibe = try XCTUnwrap(store.create(name: "Optimistic"))
+
+        XCTAssertEqual(store.activeMoodID, vibe.id)
+        XCTAssertEqual(store.activeMood?.name, "Optimistic")
+    }
+
     func testCreateRejectsEmptyName() {
         let store = makeStore()
         XCTAssertNil(store.create(name: "   "))
-        XCTAssertEqual(store.moods.count, 1)
+        XCTAssertTrue(store.moods.isEmpty)
     }
 
     // MARK: Rename
@@ -109,6 +116,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testDeleteRemovesFilesAndFallsBackToRemainingMood() throws {
         let store = makeStore()
+        let first = try XCTUnwrap(store.create(name: "First"))
         let second = try XCTUnwrap(store.create(name: "Second"))
         store.activate(second)
         XCTAssertEqual(store.activeMoodID, second.id)
@@ -119,16 +127,18 @@ final class MoodStoreTests: XCTestCase {
         store.delete(second)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
         XCTAssertFalse(store.moods.contains { $0.id == second.id })
-        XCTAssertEqual(store.activeMood?.name, MoodStore.starterMoodName)
+        XCTAssertEqual(store.activeMoodID, first.id)
+        XCTAssertEqual(store.activeMood?.name, "First")
     }
 
-    func testDeletingLastMoodRecreatesStarter() throws {
+    func testDeletingLastVibeReturnsToEmptyState() throws {
         let store = makeStore()
-        let starter = try XCTUnwrap(store.moods.first)
-        store.delete(starter)
-        XCTAssertEqual(store.moods.count, 1)
-        XCTAssertEqual(store.moods.first?.name, MoodStore.starterMoodName)
-        XCTAssertNotNil(store.activeMood)
+        let vibe = try XCTUnwrap(store.create(name: "Optimistic"))
+        store.delete(vibe)
+
+        XCTAssertTrue(store.moods.isEmpty)
+        XCTAssertNil(store.activeMoodID)
+        XCTAssertNil(store.activeMood)
     }
 
     // MARK: Switch
@@ -160,12 +170,13 @@ final class MoodStoreTests: XCTestCase {
 
         store = makeStore()
         let names = store?.moods.map(\.name)
-        XCTAssertEqual(names, [MoodStore.starterMoodName, "Alpha", "Beta"])
+        XCTAssertEqual(names, ["Alpha", "Beta"])
         XCTAssertEqual(store?.mood(id: a.id)?.id, a.id)
         XCTAssertEqual(store?.mood(id: b.id)?.id, b.id)
     }
 
     func testStaleActiveIDInDefaultsFallsBackToFirstMood() {
+        _ = makeStore().create(name: "Optimistic")
         defaults.set("no-such-mood", forKey: MoodStore.activeMoodIDKey)
         let store = makeStore()
         XCTAssertEqual(store.activeMoodID, store.moods.first?.id)
@@ -175,7 +186,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testImportCopiesNormalizedJPEGIntoSlotFolder() throws {
         let store = makeStore()
-        let mood = try XCTUnwrap(store.moods.first)
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
 
         // Render a tiny real image to import.
         let sourceURL = baseURL.appendingPathComponent("source.png")
@@ -205,7 +216,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testEffectiveWallpapersFallsBackToAllDayPoolForEmptySlot() throws {
         let store = makeStore()
-        let mood = try XCTUnwrap(store.moods.first)
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
         let allDayFolder = store.allDayFolderURL(in: mood)
         let allDayImage = allDayFolder.appendingPathComponent("shared.jpg")
         try Data([0xFF, 0xD8, 0xFF]).write(to: allDayImage)
@@ -218,7 +229,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testEffectiveWallpapersPrefersSlotSpecificPoolOverAllDayPool() throws {
         let store = makeStore()
-        let mood = try XCTUnwrap(store.moods.first)
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
         let allDayImage = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
         try Data([0xFF, 0xD8, 0xFF]).write(to: allDayImage)
         let morningImage = store.folderURL(for: .morning, in: mood).appendingPathComponent("morning.jpg")
@@ -232,7 +243,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testImportAllDayFolderRecursivelyImportsImagesAndIgnoresOtherFiles() async throws {
         let store = makeStore()
-        let mood = try XCTUnwrap(store.moods.first)
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
         let sourceFolder = baseURL.appendingPathComponent("Wallpaper Folder")
         let nestedFolder = sourceFolder.appendingPathComponent("Favorites")
         try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
@@ -251,7 +262,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testImportAllDayKeepsSuccessfulImagesWhenAnotherImageFails() async throws {
         let store = makeStore()
-        let mood = try XCTUnwrap(store.moods.first)
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
         let sourceFolder = baseURL.appendingPathComponent("Mixed Wallpapers")
         try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
         try writeTestImage(to: sourceFolder.appendingPathComponent("good.png"))
@@ -269,6 +280,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testActivateFiresChangeHookExactlyOnce() throws {
         let store = makeStore()
+        _ = try XCTUnwrap(store.create(name: "Optimistic"))
         let cozy = try XCTUnwrap(store.create(name: "Cozy"))
         var fired = 0
         store.onActiveMoodChange = { fired += 1 }
@@ -283,6 +295,7 @@ final class MoodStoreTests: XCTestCase {
 
     func testDeletingActiveMoodFiresChangeHookForFallback() throws {
         let store = makeStore()
+        let first = try XCTUnwrap(store.create(name: "First"))
         let second = try XCTUnwrap(store.create(name: "Second"))
         store.activate(second)
         var fired = 0
@@ -290,12 +303,14 @@ final class MoodStoreTests: XCTestCase {
 
         store.delete(second)
         XCTAssertEqual(fired, 1)
-        XCTAssertEqual(store.activeMood?.name, MoodStore.starterMoodName)
+        XCTAssertEqual(store.activeMoodID, first.id)
     }
 
     func testDeletingInactiveMoodDoesNotFireChangeHook() throws {
         let store = makeStore()
+        let first = try XCTUnwrap(store.create(name: "First"))
         let second = try XCTUnwrap(store.create(name: "Second"))
+        XCTAssertEqual(store.activeMoodID, first.id)
         var fired = 0
         store.onActiveMoodChange = { fired += 1 }
 

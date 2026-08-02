@@ -98,7 +98,7 @@ struct MoodWallpaperImportView: View {
                 Spacer()
 
                 if mode == .creation && !wallpapers.isEmpty {
-                    Button("Use This Mood") {
+                    Button("Use This Vibe") {
                         store.activate(mood)
                         dismiss()
                     }

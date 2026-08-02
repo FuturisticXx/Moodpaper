@@ -40,8 +40,8 @@ struct WallpaperHistoryEntry: Codable, Identifiable {
     static func triggerDisplayName(for trigger: String?) -> String {
         switch trigger {
         case "scheduledTick": return "Schedule"
-        case "moodChange": return "Mood"
-        case "vibeChange": return "Mood"   // legacy persisted history entries
+        case "moodChange": return "Vibe"
+        case "vibeChange": return "Vibe"   // legacy persisted history entries
         case "activeSpaceDidChange": return "Space"
         case "manual", "restoreHistoryEntry": return "Manual"
         case .some(let value) where value.hasPrefix("weather"):

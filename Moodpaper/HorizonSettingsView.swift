@@ -118,7 +118,7 @@ enum HorizonSettingsSection: String, CaseIterable, Identifiable {
         case .dashboard:    return "Dashboard"
         case .schedule:     return "Schedule"
         case .library:      return "Library"
-        case .moods:        return "Moods"
+        case .moods:        return "Vibes"
         case .focusMode:    return "Focus Mode"
         case .multiDisplay: return "Multi-Display"
         case .appSettings:  return "Settings"
@@ -162,7 +162,11 @@ private struct VibrantBackground: NSViewRepresentable {
         let view = NSVisualEffectView()
         view.material = material
         view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
+        // `.followsWindowActiveState` collapses behind-window vibrancy into a
+        // flat grey fill whenever the window is not key, which hides the
+        // desktop entirely. Keep the blur live so the wallpaper still reads
+        // through while the user is working in another app.
+        view.state = .active
         view.isEmphasized = true
         return view
     }
@@ -244,7 +248,7 @@ struct HorizonSettingsRootView: View {
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
         }
         .ignoresSafeArea(.container, edges: .top)
-        .background(VibrantBackground(material: .popover).ignoresSafeArea())
+        .background(VibrantBackground(material: .hudWindow).ignoresSafeArea())
         .frame(minWidth: 1168, minHeight: 792)
         .background(WindowTransparencyBridge())
         .onReceive(NotificationCenter.default.publisher(for: .navigateToMoods)) { _ in
@@ -295,7 +299,7 @@ private struct SettingsHeaderBar: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Moodpaper")
                         .font(.system(size: 20, weight: .semibold))
-                    Text("Your Photos, Your Moods")
+                    Text("Your Photos, Your Vibes")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -1106,7 +1110,7 @@ struct AppSettingsView: View {
                     HStack(spacing: 14) {
                         SettingsIconBox(symbol: "sun.horizon.fill", color: .orange, gradient: [.orange, .yellow])
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Moodpaper: Your Photos, Your Moods")
+                            Text("Moodpaper: Your Photos, Your Vibes")
                                 .font(.system(size: 13, weight: .medium))
                             Text(appVersion)
                                 .font(.system(size: 11))
