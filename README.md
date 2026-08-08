@@ -4,14 +4,17 @@
 
 Moodpaper is a free, open-source macOS menu bar app that changes your desktop wallpaper throughout the day using your own photos. Assign images to parts of the day, group those assignments into named Vibes, and switch your desktop's personality in one click.
 
-Moodpaper is a direct download, not a Mac App Store product. It has no account, paywall, subscription, Premium tier, in-app purchase, or bundled wallpaper library. An optional Buy Me a Coffee link supports development without unlocking features.
+Moodpaper is a direct download, not a Mac App Store product. It has no account, paywall, subscription, Premium tier, or in-app purchase. An optional Buy Me a Coffee link supports development without unlocking features.
+
+Moodpaper ships no wallpaper library. It does include a nine-image starter set, one photograph per time slot, so a brand new install has something on screen before you import anything. Those nine become your first Vibe during the welcome, and you can rename or delete that Vibe like any other.
 
 ## Features
 
 - **Your photos:** Import individual images, drag in files, or load an entire folder into a Vibe. Moodpaper copies supported images into its sandboxed Application Support folder.
 - **Nine time slots:** Deep Night, Dawn, Sunrise, Morning, Midday, Afternoon, Golden Hour, Dusk, and Evening.
 - **All Day wallpaper pool:** Give each Vibe one shared pool that works immediately across the whole day, then add time-specific favorites whenever you want.
-- **Named Vibes:** Start with a blank slate, playfully name your first Vibe, then create, rename, duplicate, delete, activate, and customize complete wallpaper collections. New Vibes flow directly into wallpaper import.
+- **Named Vibes:** Name your first Vibe during the welcome, then create, rename, duplicate, delete, activate, and customize complete wallpaper collections. New Vibes flow directly into wallpaper import.
+- **A welcome that sets your desktop:** Scrub a dial across the day to watch the light change, name what you see, and your real desktop changes once before the window closes. Replay it anytime from Settings.
 - **Automatic scheduling:** Move through the day using configurable time slots and local sunrise and sunset timing.
 - **Safe empty slots:** A time slot uses its own images when available, falls back to the Vibe's All Day pool, and holds the current wallpaper only when both are empty.
 - **Resilient weather display:** Refresh local weather at launch, after wake and app activation, and on demand without letting weather choose your wallpaper. Moodpaper keeps a recent successful reading visible during temporary provider failures and retries automatically.
