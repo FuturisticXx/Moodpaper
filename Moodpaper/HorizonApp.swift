@@ -134,6 +134,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             object: nil
         )
 
+        // Onboarding's commit moment hands off to the menu bar with a pulse
+        // so first-run users learn where the app lives.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(pulseMenuBarIcon),
+            name: .moodpaperOnboardingCommitted,
+            object: nil
+        )
+
+        // Settings' "Replay the Welcome" button.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showOnboardingFromSettings),
+            name: .moodpaperShowOnboarding,
+            object: nil
+        )
+
         migrateUserDefaultsIfNeeded()
 
         // Show onboarding on first launch
@@ -224,7 +241,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    @objc func showOnboardingFromSettings() {
+        showOnboarding()
+    }
+
     func showOnboarding() {
+        // Replaying from Settings must not stack a second window on top of a
+        // welcome that is already open.
+        if let existing = onboardingWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
         let onboardingView = OnboardingView(isPresented: Binding(
             get: { self.onboardingWindow != nil },
             set: { newValue in
@@ -243,10 +272,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.backgroundColor = .clear
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        // The window moves by its title bar, and by nothing else.
+        //
+        // `isMovableByWindowBackground` must stay off: the material layer
+        // SwiftUI renders under the glass card reports itself as
+        // window-draggable, so with background dragging on, a scrub of the day
+        // dial threw the whole window off-screen. Leaving `isMovable` on
+        // restores normal title-bar dragging (and lets the user park the
+        // window on whichever display they want) without handing the dial's
+        // drags to the window server.
         window.isMovable = true
-        window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 1060, height: 720))
-        window.minSize = NSSize(width: 1060, height: 720)
+        window.isMovableByWindowBackground = false
+        let onboardingSize = NSSize(
+            width: OnboardingView.windowSize.width,
+            height: OnboardingView.windowSize.height
+        )
+        window.setContentSize(onboardingSize)
+        window.minSize = onboardingSize
         window.level = .floating
 
         // Center on the primary screen (NSScreen.screens.first is the screen
@@ -254,10 +296,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // the window on the wrong display in multi-monitor configurations.
         if let screen = NSScreen.screens.first {
             let visibleFrame = screen.visibleFrame
-            let windowSize = NSSize(width: 1060, height: 720)
             let origin = NSPoint(
-                x: visibleFrame.midX - windowSize.width / 2,
-                y: visibleFrame.midY - windowSize.height / 2
+                x: visibleFrame.midX - onboardingSize.width / 2,
+                y: visibleFrame.midY - onboardingSize.height / 2
             )
             window.setFrameOrigin(origin)
         } else {
@@ -276,6 +317,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
                 AnalyticsManager.shared.log(.onboardingCompleted)
                 self?.onboardingWindow = nil
+                // A commit may still be polling for the wallpaper to land. Tell
+                // it the window is gone so it drops its handoff (menu bar pulse
+                // and second close) instead of firing seconds later with no
+                // window on screen. The wallpaper itself is already in flight
+                // and is deliberately left to finish.
+                NotificationCenter.default.post(
+                    name: .moodpaperOnboardingWindowWillClose,
+                    object: nil
+                )
             }
         }
 
@@ -284,6 +334,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         onboardingWindow = window
+    }
+
+    /// Two gentle alpha pulses on the status item after onboarding commits.
+    /// Under Reduce Motion this becomes a static highlight instead: same
+    /// "look up here" message, no movement.
+    @objc func pulseMenuBarIcon() {
+        guard let button = statusItem?.button else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            button.highlight(true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                button.highlight(false)
+            }
+            return
+        }
+        pulse(button, remaining: 2)
+    }
+
+    private func pulse(_ button: NSStatusBarButton, remaining: Int) {
+        guard remaining > 0 else { return }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.35
+            button.animator().alphaValue = 0.2
+        }, completionHandler: {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.35
+                button.animator().alphaValue = 1.0
+            }, completionHandler: { [weak self] in
+                self?.pulse(button, remaining: remaining - 1)
+            })
+        })
     }
 
     @objc func openPopoverFromShortcut() {

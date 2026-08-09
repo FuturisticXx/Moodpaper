@@ -125,4 +125,14 @@ extension Notification.Name {
     static let horizonOpenPopover        = Notification.Name("com.2DaMax.Moodpaper.openPopover")
     static let navigateToMoods           = Notification.Name("com.2DaMax.Moodpaper.navigateToMoods")
     static let navigateToUserWallpapers  = Notification.Name("com.2DaMax.Moodpaper.navigateToUserWallpapers")
+    static let moodpaperOnboardingCommitted = Notification.Name("com.2DaMax.Moodpaper.onboardingCommitted")
+    /// Settings asking for the welcome to be replayed. A notification rather
+    /// than a direct delegate call: `@NSApplicationDelegateAdaptor` hands
+    /// `NSApplication.shared.delegate` a `SwiftUI.AppDelegate` wrapper, so
+    /// casting it back to this app's AppDelegate always fails and the button
+    /// silently did nothing.
+    static let moodpaperShowOnboarding = Notification.Name("com.2DaMax.Moodpaper.showOnboarding")
+    /// Fires for every onboarding close path, including the title bar's red
+    /// button, so a commit still in flight can drop its handoff work.
+    static let moodpaperOnboardingWindowWillClose = Notification.Name("com.2DaMax.Moodpaper.onboardingWindowWillClose")
 }

@@ -384,7 +384,7 @@ struct MoodEditorSheet: View {
                 Text("Vibe name")
                     .font(HorizonTypography.caption)
                     .foregroundColor(HorizonColors.textSecondary)
-                TextField(OnboardingCopy.step4NamePlaceholder, text: $name)
+                TextField(OnboardingCopy.namePlaceholder, text: $name)
                     .textFieldStyle(.roundedBorder)
             }
 

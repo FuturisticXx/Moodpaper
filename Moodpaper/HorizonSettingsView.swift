@@ -1124,6 +1124,31 @@ struct AppSettingsView: View {
                     Divider().opacity(0.35).padding(.leading, 52)
 
                     HStack(spacing: 14) {
+                        SettingsIconBox(symbol: "sparkles", color: .purple, gradient: [.purple, .indigo])
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Replay the Welcome")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Walk through the intro again. Your Vibes and settings stay as they are.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Show Again") {
+                            NotificationCenter.default.post(
+                                name: .moodpaperShowOnboarding,
+                                object: nil
+                            )
+                        }
+                        .font(.system(size: 12))
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Replay the welcome walkthrough")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+
+                    Divider().opacity(0.35).padding(.leading, 52)
+
+                    HStack(spacing: 14) {
                         SettingsIconBox(symbol: "cup.and.saucer.fill", color: .brown, gradient: [.brown, .orange])
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Support Moodpaper")
