@@ -274,34 +274,48 @@ final class MoodStore: ObservableObject {
 
     // MARK: - Wallpaper files
 
-    /// Copy-on-import: each image is decoded and rewritten as a normalized
-    /// JPEG inside the mood's slot folder, so the original file can move or
-    /// disappear without breaking the mood.
-    func importWallpapers(_ urls: [URL], to slot: TimeSlot, in mood: Mood) throws {
-        let destinationFolder = folderURL(for: slot, in: mood)
-        for url in urls {
-            let didStartAccess = url.startAccessingSecurityScopedResource()
-            defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
-            let destination = Self.importDestination(for: url, in: destinationFolder)
-            try writeNormalizedImage(from: url, to: destination)
-            print("Horizon: Imported wallpaper \(destination.lastPathComponent) to mood \(mood.name), slot \(slot.displayName)")
-        }
-        touch(mood)
-        objectWillChange.send()
-        AnalyticsManager.shared.log(.moodWallpaperImported, metadata: [
-            "moodID": mood.id,
-            "slot": slot.rawValue,
-            "count": "\(urls.count)"
-        ])
+    /// Imports image files, folders, or a mixture of both into one time slot
+    /// of a mood. Shares the All Day pipeline, so a slot import walks folders
+    /// recursively and one unreadable file never discards the rest — before
+    /// this the slot importer threw on the first failure and abandoned every
+    /// remaining file with nothing surfaced to the user.
+    func importWallpapers(
+        from urls: [URL],
+        to slot: TimeSlot,
+        in mood: Mood
+    ) async throws -> WallpaperImportSummary {
+        try await importItems(
+            from: urls,
+            to: folderURL(for: slot, in: mood),
+            in: mood,
+            slotName: slot.rawValue
+        )
     }
 
     /// Imports image files, folders, or a mixture of both into a mood's All
     /// Day pool. Folder contents are discovered recursively, non-images are
     /// ignored, and individual decode failures don't discard successful work.
     func importAllDayWallpapers(from urls: [URL], in mood: Mood) async throws -> WallpaperImportSummary {
-        let destinationFolder = allDayFolderURL(in: mood)
+        try await importItems(
+            from: urls,
+            to: allDayFolderURL(in: mood),
+            in: mood,
+            slotName: Self.allDayFolderName
+        )
+    }
+
+    /// Copy-on-import: every discovered image is decoded and rewritten as a
+    /// normalized JPEG inside `destinationFolder`, so the original file can
+    /// move or disappear without breaking the mood. One decision point for
+    /// All Day and slot imports alike, so neither can drift from the other.
+    private func importItems(
+        from urls: [URL],
+        to destinationFolder: URL,
+        in mood: Mood,
+        slotName: String
+    ) async throws -> WallpaperImportSummary {
         let summary = try await Task.detached(priority: .userInitiated) {
-            try Self.importAllDayItems(urls, to: destinationFolder)
+            try Self.importItems(urls, to: destinationFolder)
         }.value
 
         if summary.importedCount > 0 {
@@ -309,7 +323,7 @@ final class MoodStore: ObservableObject {
             objectWillChange.send()
             AnalyticsManager.shared.log(.moodWallpaperImported, metadata: [
                 "moodID": mood.id,
-                "slot": Self.allDayFolderName,
+                "slot": slotName,
                 "count": "\(summary.importedCount)"
             ])
         }
@@ -336,7 +350,7 @@ final class MoodStore: ObservableObject {
         return directory.appendingPathComponent("\(baseName)-\(uniqueSuffix).jpg")
     }
 
-    private nonisolated static func importAllDayItems(
+    private nonisolated static func importItems(
         _ sourceURLs: [URL],
         to destinationFolder: URL
     ) throws -> WallpaperImportSummary {

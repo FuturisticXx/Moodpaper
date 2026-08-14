@@ -184,7 +184,7 @@ final class MoodStoreTests: XCTestCase {
 
     // MARK: Import
 
-    func testImportCopiesNormalizedJPEGIntoSlotFolder() throws {
+    func testImportCopiesNormalizedJPEGIntoSlotFolder() async throws {
         let store = makeStore()
         let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
 
@@ -204,14 +204,57 @@ final class MoodStoreTests: XCTestCase {
         CGImageDestinationAddImage(destination, image, nil)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
 
-        try store.importWallpapers([sourceURL], to: .evening, in: mood)
+        let summary = try await store.importWallpapers(from: [sourceURL], to: .evening, in: mood)
 
+        XCTAssertEqual(summary.importedCount, 1)
+        XCTAssertEqual(summary.failedCount, 0)
         let imported = store.wallpapers(for: .evening, in: mood)
         XCTAssertEqual(imported.count, 1)
         XCTAssertEqual(imported.first?.pathExtension, "jpg")
         // Copy-on-import: deleting the source must not affect the mood.
         try FileManager.default.removeItem(at: sourceURL)
         XCTAssertEqual(store.wallpaperCount(for: .evening, in: mood), 1)
+    }
+
+    /// A slot import must survive one bad file the same way the All Day path
+    /// already does. Before Stage 0 the slot importer threw on the first
+    /// undecodable image and abandoned every remaining file silently.
+    func testSlotImportKeepsSuccessfulImagesWhenAnotherImageFails() async throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let sourceFolder = baseURL.appendingPathComponent("Mixed Slot Wallpapers")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        let good = sourceFolder.appendingPathComponent("good.png")
+        let broken = sourceFolder.appendingPathComponent("broken.jpg")
+        try writeTestImage(to: good)
+        try Data("not an image".utf8).write(to: broken)
+
+        let summary = try await store.importWallpapers(from: [good, broken], to: .morning, in: mood)
+
+        XCTAssertEqual(summary.discoveredCount, 2)
+        XCTAssertEqual(summary.importedCount, 1)
+        XCTAssertEqual(summary.failedCount, 1)
+        XCTAssertEqual(store.wallpaperCount(for: .morning, in: mood), 1)
+    }
+
+    /// Slot import shares the All Day walker, so dropping a folder onto a time
+    /// slot now works instead of being silently ignored.
+    func testSlotImportWalksFoldersRecursively() async throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let sourceFolder = baseURL.appendingPathComponent("Slot Folder")
+        let nestedFolder = sourceFolder.appendingPathComponent("Favorites")
+        try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
+        try writeTestImage(to: sourceFolder.appendingPathComponent("lake.png"))
+        try writeTestImage(to: nestedFolder.appendingPathComponent("forest.png"))
+        try Data("notes".utf8).write(to: sourceFolder.appendingPathComponent("notes.txt"))
+
+        let summary = try await store.importWallpapers(from: [sourceFolder], to: .dusk, in: mood)
+
+        XCTAssertEqual(summary.discoveredCount, 2)
+        XCTAssertEqual(summary.importedCount, 2)
+        XCTAssertEqual(summary.failedCount, 0)
+        XCTAssertEqual(store.wallpaperCount(for: .dusk, in: mood), 2)
     }
 
     func testEffectiveWallpapersFallsBackToAllDayPoolForEmptySlot() throws {
@@ -274,6 +317,38 @@ final class MoodStoreTests: XCTestCase {
         XCTAssertEqual(summary.importedCount, 1)
         XCTAssertEqual(summary.failedCount, 1)
         XCTAssertEqual(store.allDayWallpapers(in: mood).count, 1)
+    }
+
+    // MARK: Remove
+
+    /// The delete-failure banner can only appear if the store actually
+    /// propagates the error. Deterministic and hermetic: the file is removed
+    /// inside this test's own scratch directory, never a real container.
+    func testRemoveWallpaperThrowsWhenTheFileIsAlreadyGone() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let wallpaper = store.folderURL(for: .morning, in: mood)
+            .appendingPathComponent("gone.jpg")
+        try writeTestImage(to: wallpaper)
+        XCTAssertEqual(store.wallpaperCount(for: .morning, in: mood), 1)
+
+        // Simulates the wallpaper disappearing underneath the Manage sheet —
+        // deleted in Finder, an unmounted volume, a permissions change.
+        try FileManager.default.removeItem(at: wallpaper)
+
+        XCTAssertThrowsError(try store.removeWallpaper(wallpaper, from: mood))
+        XCTAssertEqual(store.wallpaperCount(for: .morning, in: mood), 0)
+    }
+
+    func testRemoveWallpaperSucceedsForAPresentFile() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let wallpaper = store.folderURL(for: .morning, in: mood)
+            .appendingPathComponent("present.jpg")
+        try writeTestImage(to: wallpaper)
+
+        XCTAssertNoThrow(try store.removeWallpaper(wallpaper, from: mood))
+        XCTAssertEqual(store.wallpaperCount(for: .morning, in: mood), 0)
     }
 
     // MARK: Mood switch refresh hook
