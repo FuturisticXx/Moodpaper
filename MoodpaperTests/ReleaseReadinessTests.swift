@@ -213,6 +213,57 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(source.contains("Task.detached(priority: .utility)"))
     }
 
+    func testSlotDropTargetUsesLiveIsTargetedBinding() throws {
+        // The slot card used to take onDropEntered/onDropExited closures that
+        // nothing ever called, so `isDropTarget` was permanently false and the
+        // highlight, border, and their animations were unreachable code. The
+        // drop state must come from SwiftUI's own isTargeted binding.
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("isTargeted: $isDropTarget"))
+        XCTAssertFalse(source.contains("isTargeted: nil"))
+        XCTAssertFalse(source.contains("onDropEntered"))
+        XCTAssertFalse(source.contains("onDropExited"))
+    }
+
+    func testWallpaperImportFailuresAreSurfacedNotPrinted() throws {
+        // Slot import and delete failures were swallowed into console prints,
+        // and fileImporter's .failure case was dropped entirely, so a failed
+        // import looked identical to nothing happening.
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(
+            source.contains("print("),
+            "UserLibraryView must report import and delete failures in the UI, not to the console"
+        )
+        XCTAssertTrue(source.contains("ImportStatusBanner"))
+        XCTAssertTrue(source.contains("case .failure(let error):"))
+        // Every failure goes through a named ImportStatus initializer, which is
+        // what makes the wording testable. ImportStatusTests locks the strings;
+        // these assertions lock the wiring that reaches them.
+        XCTAssertTrue(source.contains("ImportStatus(importFailure: error)"))
+        XCTAssertTrue(source.contains("ImportStatus(deleteFailure: error)"))
+    }
+
+    func testSlotImportSharesTheAllDayImportPipeline() throws {
+        // One importer for All Day and slots: folder walking, per-file error
+        // handling, and the summary type must not diverge between them again.
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodStore.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("func importWallpapers(\n        from urls: [URL],"))
+        XCTAssertTrue(source.contains("private func importItems("))
+        XCTAssertFalse(source.contains("importAllDayItems"))
+    }
+
     func testSettingsNavigationDoesNotExposeDebugOrDiagnosticsSection() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/HorizonSettingsView.swift"),

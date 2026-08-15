@@ -13,7 +13,8 @@ struct UserLibraryView: View {
     @State private var showingFilePicker = false
     @State private var showingAllDayImporter = false
     @State private var importingToSlot: TimeSlot?
-    @State private var isDroppingOnSlot: TimeSlot? = nil
+    @State private var isImporting = false
+    @State private var importStatus: ImportStatus?
     @AppStorage(HorizonScheduleDefaults.timeSlotModeKey) private var timeSlotMode = "Detailed"
 
     private var filteredSlots: [TimeSlot] {
@@ -101,6 +102,12 @@ struct UserLibraryView: View {
                 .padding(.bottom, HorizonSpacing.lg)
             }
 
+            if let importStatus {
+                ImportStatusBanner(status: importStatus, isImporting: isImporting)
+                    .padding(.horizontal, HorizonSpacing.xxxl)
+                    .padding(.bottom, HorizonSpacing.md)
+            }
+
             // Slot Cards — each edits the active mood's assignment for that slot
             if let mood = store.activeMood {
                 VStack(spacing: HorizonSpacing.lg) {
@@ -125,21 +132,12 @@ struct UserLibraryView: View {
                             wallpaperCount: store.wallpaperCount(for: slot, in: mood),
                             usesAllDayFallback: store.wallpaperCount(for: slot, in: mood) == 0
                                 && !store.allDayWallpapers(in: mood).isEmpty,
-                            isDropTarget: isDroppingOnSlot == slot,
                             onImport: {
                                 importingToSlot = slot
                                 showingFilePicker = true
                             },
                             onManage: { selectedSlot = slot },
-                            onDrop: { urls in
-                                do {
-                                    try store.importWallpapers(urls, to: slot, in: mood)
-                                } catch {
-                                    print("[UserLibraryView] Failed to import wallpapers to slot \(slot): \(error)")
-                                }
-                            },
-                            onDropEntered: { isDroppingOnSlot = slot },
-                            onDropExited: { isDroppingOnSlot = nil }
+                            onDrop: { urls in importWallpapers(urls, to: slot) }
                         )
                     }
                 }
@@ -162,17 +160,99 @@ struct UserLibraryView: View {
             allowedContentTypes: [.image],
             allowsMultipleSelection: true
         ) { result in
-            if case .success(let urls) = result {
-                if let slot = importingToSlot, let mood = store.activeMood {
-                    do {
-                        try store.importWallpapers(urls, to: slot, in: mood)
-                    } catch {
-                        print("[UserLibraryView] Failed to import wallpapers to slot \(slot): \(error)")
-                    }
+            switch result {
+            case .success(let urls):
+                if let slot = importingToSlot {
+                    importWallpapers(urls, to: slot)
                 }
+            case .failure(let error):
+                importStatus = ImportStatus(importFailure: error)
             }
             importingToSlot = nil
         }
+    }
+
+    /// Every slot import — picker or drop — lands here, so a failure is always
+    /// reported instead of being swallowed into a console print.
+    private func importWallpapers(_ urls: [URL], to slot: TimeSlot) {
+        guard let mood = store.activeMood, !urls.isEmpty else { return }
+        isImporting = true
+        importStatus = nil
+        Task {
+            do {
+                let summary = try await store.importWallpapers(from: urls, to: slot, in: mood)
+                importStatus = ImportStatus(summary: summary)
+            } catch {
+                importStatus = ImportStatus(importFailure: error)
+            }
+            isImporting = false
+        }
+    }
+}
+
+// MARK: - Import feedback
+
+/// One place that turns an import or delete outcome into user-facing words,
+/// so every slot surface says what the All Day sheet already says instead of
+/// failing silently. Every caller goes through a named initializer, which is
+/// what keeps these strings testable rather than buried in a `catch`.
+struct ImportStatus: Equatable {
+    let text: String
+    let isError: Bool
+
+    private init(text: String, isError: Bool) {
+        self.text = text
+        self.isError = isError
+    }
+
+    init(importFailure error: Error) {
+        self.init(text: "Import failed: \(error.localizedDescription)", isError: true)
+    }
+
+    init(deleteFailure error: Error) {
+        self.init(
+            text: "Couldn't delete that wallpaper: \(error.localizedDescription)",
+            isError: true
+        )
+    }
+
+    init(summary: WallpaperImportSummary) {
+        if summary.discoveredCount == 0 {
+            self.init(text: "No supported images were found.", isError: true)
+        } else if summary.failedCount > 0 {
+            self.init(
+                text: "Added \(summary.importedCount) of \(summary.discoveredCount) images. "
+                    + "\(summary.failedCount) could not be imported.",
+                isError: true
+            )
+        } else {
+            self.init(
+                text: "Added \(summary.importedCount) wallpaper\(summary.importedCount == 1 ? "" : "s").",
+                isError: false
+            )
+        }
+    }
+}
+
+private struct ImportStatusBanner: View {
+    let status: ImportStatus
+    var isImporting: Bool = false
+
+    var body: some View {
+        HStack(spacing: HorizonSpacing.sm) {
+            if isImporting {
+                ProgressView().controlSize(.small)
+            }
+            Label(
+                status.text,
+                systemImage: status.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+            )
+            .font(HorizonTypography.caption)
+            .foregroundColor(status.isError ? .orange : .green)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status.text)
     }
 }
 
@@ -231,12 +311,14 @@ private struct TimeSlotCard: View {
     let slot: TimeSlot
     let wallpaperCount: Int
     let usesAllDayFallback: Bool
-    let isDropTarget: Bool
     let onImport: () -> Void
     let onManage: () -> Void
     let onDrop: ([URL]) -> Void
-    let onDropEntered: () -> Void
-    let onDropExited: () -> Void
+
+    /// Owned by the card and bound straight to `.onDrop(isTargeted:)`. The
+    /// previous enter/exit callbacks were never invoked, so the highlight and
+    /// border below could never render.
+    @State private var isDropTarget = false
 
     var slotColor: Color {
         HorizonColors.colorForSlot(slot.slotID)
@@ -299,19 +381,29 @@ private struct TimeSlotCard: View {
                     .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isDropTarget)
             }
         }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            var urls: [URL] = []
+        .onDrop(of: [.fileURL], isTargeted: $isDropTarget) { providers in
+            // Folders are passed through rather than filtered out here: the
+            // store walks them recursively and decides what is an image, the
+            // same way the All Day drop zone already does.
             let group = DispatchGroup()
+            let lock = NSLock()
+            var urls: [URL] = []
             for provider in providers {
                 group.enter()
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                     defer { group.leave() }
-                    guard let data = item as? Data,
-                          let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                    let ext = url.pathExtension.lowercased()
-                    if ["jpg", "jpeg", "png", "heic", "heif", "tiff", "bmp"].contains(ext) {
-                        urls.append(url)
+                    let url: URL?
+                    if let itemURL = item as? URL {
+                        url = itemURL
+                    } else if let data = item as? Data {
+                        url = URL(dataRepresentation: data, relativeTo: nil)
+                    } else {
+                        url = nil
                     }
+                    guard let url else { return }
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
                 }
             }
             group.notify(queue: .main) {
@@ -329,6 +421,8 @@ private struct ManageWallpapersSheet: View {
     @ObservedObject private var store = MoodStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showingFilePicker = false
+    @State private var isImporting = false
+    @State private var status: ImportStatus?
 
     private var wallpapers: [URL] {
         guard let mood = store.activeMood else { return [] }
@@ -365,6 +459,12 @@ private struct ManageWallpapersSheet: View {
 
             Divider()
 
+            if let status {
+                ImportStatusBanner(status: status, isImporting: isImporting)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+            }
+
             if wallpapers.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "photo.on.rectangle.angled")
@@ -388,8 +488,9 @@ private struct ManageWallpapersSheet: View {
                                 guard let mood = store.activeMood else { return }
                                 do {
                                     try store.removeWallpaper(url, from: mood)
+                                    status = nil
                                 } catch {
-                                    print("[UserLibraryView] Failed to delete wallpaper: \(error)")
+                                    status = ImportStatus(deleteFailure: error)
                                 }
                             }
                         }
@@ -404,13 +505,27 @@ private struct ManageWallpapersSheet: View {
             allowedContentTypes: [.image],
             allowsMultipleSelection: true
         ) { result in
-            if case .success(let urls) = result, let mood = store.activeMood {
-                do {
-                    try store.importWallpapers(urls, to: slot, in: mood)
-                } catch {
-                    print("[UserLibraryView] Failed to import wallpapers to slot \(slot): \(error)")
-                }
+            switch result {
+            case .success(let urls):
+                importWallpapers(urls)
+            case .failure(let error):
+                status = ImportStatus(importFailure: error)
             }
+        }
+    }
+
+    private func importWallpapers(_ urls: [URL]) {
+        guard let mood = store.activeMood, !urls.isEmpty else { return }
+        isImporting = true
+        status = nil
+        Task {
+            do {
+                let summary = try await store.importWallpapers(from: urls, to: slot, in: mood)
+                status = ImportStatus(summary: summary)
+            } catch {
+                status = ImportStatus(importFailure: error)
+            }
+            isImporting = false
         }
     }
 }
