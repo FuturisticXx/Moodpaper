@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Only entitlements with no build-setting equivalent belong here. The sandbox
+	entitlements are declared by the ENABLE_* build settings in project.pbxproj
+	(ENABLE_APP_SANDBOX, ENABLE_OUTGOING_NETWORK_CONNECTIONS,
+	ENABLE_RESOURCE_ACCESS_CALENDARS, ENABLE_RESOURCE_ACCESS_LOCATION,
+	ENABLE_USER_SELECTED_FILES) and are merged into the signed entitlements at
+	build time. Declaring one in both places lets the two disagree silently.
+-->
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
-	<true/>
-	<key>com.apple.security.files.user-selected.read-write</key>
-	<true/>
-	<key>com.apple.security.network.client</key>
-	<true/>
-	<key>com.apple.security.personal-information.calendars</key>
-	<true/>
-	<key>com.apple.security.personal-information.location</key>
-	<true/>
 	<key>com.apple.developer.weatherkit</key>
 	<true/>
 </dict>
