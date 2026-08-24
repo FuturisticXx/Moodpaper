@@ -78,6 +78,7 @@ nonisolated fileprivate struct SendableScreen: @unchecked Sendable {
 }
 
 nonisolated fileprivate struct WallpaperScreenApplyJob: @unchecked Sendable {
+    let key: String
     let name: String
     let screen: SendableScreen
     let preparedURL: URL
@@ -87,6 +88,7 @@ nonisolated fileprivate struct WallpaperScreenApplyJob: @unchecked Sendable {
 }
 
 nonisolated fileprivate struct WallpaperScreenApplyResult: Sendable {
+    let key: String
     let name: String
     let preparedURL: URL
     let preparedFilename: String
@@ -251,48 +253,6 @@ class WallpaperManager: ObservableObject {
     // macOS does not expose durable Space identifiers via public APIs.
     private var spaceVisitCounter: Int = 0
 
-    // Legacy per-Space slot pins, keyed by Space visit counter string ("1", "2", ...).
-    // These are visit ordinals, not Mission Control Space IDs. The settings card
-    // is hidden until a public Space identifier exists, and leftover pins are
-    // not applied.
-    private let spacePinsKey = "schedule.spacePins"
-
-    var spacePins: [String: String] {
-        get {
-            guard let data = UserDefaults.standard.data(forKey: spacePinsKey) else { return [:] }
-            do {
-                let decoded = try JSONDecoder().decode([String: String].self, from: data)
-                return decoded
-            } catch {
-                print("[WallpaperManager] Failed to decode spacePins: \(error)")
-                return [:]
-            }
-        }
-        set {
-            do {
-                let encoded = try JSONEncoder().encode(newValue)
-                UserDefaults.standard.set(encoded, forKey: spacePinsKey)
-            } catch {
-                print("[WallpaperManager] Failed to encode spacePins: \(error)")
-            }
-            objectWillChange.send()
-        }
-    }
-
-    func setPinForSpace(_ spaceKey: String, slotID: String?) {
-        var pins = spacePins
-        if let slot = slotID {
-            pins[spaceKey] = slot
-        } else {
-            pins.removeValue(forKey: spaceKey)
-        }
-        spacePins = pins
-    }
-
-    func pinnedSlot(forSpace spaceKey: String) -> String? {
-        spacePins[spaceKey]
-    }
-
     // Sync all Spaces: re-applies wallpaper whenever the active Space changes.
     // Defaults to true for never-touched users; explicit false stays false.
     var syncAllSpaces: Bool {
@@ -351,6 +311,7 @@ class WallpaperManager: ObservableObject {
         loadHistory()
         loadDisplayModes()
         loadLastWallpaperChangeDate()
+        AppDelegate.UserDefaultsMigration.clearVisitOrdinalSpacePins(defaults: .standard)
         reconcileDisplayTopology(reason: "init", reapply: false)
         reconcileCurrentWallpaperState()
         refreshPreparedWallpaperStateIfNeeded()
@@ -595,16 +556,6 @@ class WallpaperManager: ObservableObject {
                         let visitKey = "\(self.spaceVisitCounter)"
                         self.coveredSpaceIDs.insert(visitKey)
 
-                        // Visit-ordinal pins are not Mission Control Space IDs.
-                        // Ignore leftover pins until durable Space identifiers exist.
-                        if self.pinnedSlot(forSpace: visitKey) != nil {
-                            HorizonDebugLog.shared.log("space.change.handled", fields: [
-                                "path": "pinIgnored",
-                                "visitKey": visitKey,
-                                "reason": "visitOrdinalPinsDisabled"
-                            ])
-                        }
-
                         // Reapply the correct wallpaper per screen to the newly active Space.
                         // desiredURLPerScreen tracks what each screen should show, handling
                         // independent displays correctly. Falls back to setWallpaperForSlot
@@ -775,7 +726,6 @@ class WallpaperManager: ObservableObject {
         }
 
         let currentKeys = Set(identities.map(\.key))
-        let currentNames = Set(identities.map(\.name))
         let currentNameToKey = Dictionary(uniqueKeysWithValues: identities.map { ($0.name, $0.key) })
         let previousNameToKey = loadDisplayIdentityMap()
         let combinedNameToKey = Self.mergedDisplayIdentityMap(
@@ -796,11 +746,10 @@ class WallpaperManager: ObservableObject {
         )
         saveDisplayModes()
 
-        let remappedIdentifiers = Self.remapNameKeyedScreenValues(
+        let remappedIdentifiers = Self.reconcileScreenKeyedValues(
             existing: currentWallpaperIdentifiersByScreen(),
-            previousNameToKey: previousNameToKey,
-            currentNameToKey: currentNameToKey,
-            currentNames: currentNames
+            nameToKey: combinedNameToKey,
+            currentKeys: currentKeys
         )
         if remappedIdentifiers != currentWallpaperIdentifiersByScreen() {
             persistWallpaperIdentifiersByScreen(remappedIdentifiers)
@@ -938,7 +887,12 @@ class WallpaperManager: ObservableObject {
             minimumInterval: minimumInterval
         )
         if preservePersistedAtLaunch {
-            rememberAppliedSlot(resolvedSlot)
+            lastSlot = resolvedSlot
+            if let stamp = Self.persistedSlotToStampAfterLaunchPreserve(
+                persistedWallpaperSlot: persistedWallpaperSlot
+            ) {
+                persistLastAppliedSlot(stamp)
+            }
             HorizonDebugLog.shared.log("schedule.launchPreserve", fields: [
                 "persisted": persistedIdentifier ?? "none",
                 "persistedSlot": persistedWallpaperSlot ?? "none",
@@ -1465,13 +1419,14 @@ class WallpaperManager: ObservableObject {
         var sourceURLsByScreen: [String: URL] = [:]
 
         for screen in screens {
-            if self.mode(for: screen.localizedName) == .independent,
+            let key = stableScreenKey(for: screen)
+            if self.mode(for: screen) == .independent,
                !slotSnapshot.isEmpty,
                let independentURL = self.moodWallpaperURL(for: slotSnapshot),
                independentURL != url {
-                sourceURLsByScreen[screen.localizedName] = independentURL
+                sourceURLsByScreen[key] = independentURL
             } else {
-                sourceURLsByScreen[screen.localizedName] = url
+                sourceURLsByScreen[key] = url
             }
         }
 
@@ -1498,8 +1453,8 @@ class WallpaperManager: ObservableObject {
             guard applied else { return }
 
             var identifiersByScreen: [String: String] = [:]
-            for (screenName, sourceURL) in sourceURLsByScreen {
-                identifiersByScreen[screenName] = self.identifier(for: sourceURL)
+            for (screenKey, sourceURL) in sourceURLsByScreen {
+                identifiersByScreen[screenKey] = self.identifier(for: sourceURL)
             }
 
             if primaryName != self.currentWallpaperName {
@@ -1558,11 +1513,12 @@ class WallpaperManager: ObservableObject {
             return
         }
 
-        let primaryScreenName = preferredDesktopScreen()?.localizedName ?? screens[0].localizedName
+        let identities = screens.map { (key: stableScreenKey(for: $0), name: $0.localizedName) }
+        let primaryScreenKey = preferredDesktopScreen().map { stableScreenKey(for: $0) } ?? identities[0].key
         let resolution = Self.resolveHistoryRestore(
             storedIdentifiersByScreen: identifiersByScreen,
-            activeScreenNames: screens.map(\.localizedName),
-            primaryScreenName: primaryScreenName
+            activeScreens: identities,
+            primaryScreenKey: primaryScreenKey
         )
 
         guard case .resolved(let resolvedIdentifiersByScreen, let resolvedPrimaryScreenName, let primaryIdentifier) = resolution else {
@@ -1572,16 +1528,16 @@ class WallpaperManager: ObservableObject {
         }
 
         var resolvedSourceURLs: [String: URL] = [:]
-        for (screenName, identifier) in resolvedIdentifiersByScreen {
+        for (screenKey, identifier) in resolvedIdentifiersByScreen {
             guard let sourceURL = wallpaperURL(for: identifier) else {
                 lastError = "Failed to restore wallpaper history."
                 isChangingWallpaper = false
                 return
             }
-            resolvedSourceURLs[screenName] = sourceURL
+            resolvedSourceURLs[screenKey] = sourceURL
         }
 
-        let primaryURL = resolvedSourceURLs[resolvedPrimaryScreenName] ?? resolvedSourceURLs[screens[0].localizedName] ?? resolvedSourceURLs.values.first!
+        let primaryURL = resolvedSourceURLs[resolvedPrimaryScreenName] ?? resolvedSourceURLs[identities[0].key] ?? resolvedSourceURLs.values.first!
         let primaryName = displayName(for: primaryURL)
         let slotSnapshot = activeSlot
         // Keep lastAppliedURL current on the restore path too — the stale-read
@@ -1637,9 +1593,14 @@ class WallpaperManager: ObservableObject {
         // off-main — NSScreen and NSWorkspace lookups belong on main.
         var previousURLsByScreen: [String: URL] = [:]
         for screen in screens {
-            guard sourceURLsByScreen[screen.localizedName] != nil else { continue }
+            let key = stableScreenKey(for: screen)
+            guard Self.valueForScreen(
+                sourceURLsByScreen,
+                displayID: displayIDString(for: screen),
+                localizedName: screen.localizedName
+            ) != nil else { continue }
             if let previousURL = NSWorkspace.shared.desktopImageURL(for: screen) {
-                previousURLsByScreen[screen.localizedName] = previousURL
+                previousURLsByScreen[key] = previousURL
             }
         }
         let sourceMap = sourceURLsByScreen
@@ -1676,18 +1637,18 @@ class WallpaperManager: ObservableObject {
         // Back on main: collect prepared URLs and update the on-disk source map.
         var preparedURLsByScreen: [String: URL] = [:]
         var mapping = preparedWallpaperSourceMap
-        for (screenName, result) in preparedResults {
+        for (screenKey, result) in preparedResults {
             switch result {
             case .success(let preparedURL):
-                preparedURLsByScreen[screenName] = preparedURL
-                if let sourceURL = sourceMap[screenName] {
+                preparedURLsByScreen[screenKey] = preparedURL
+                if let sourceURL = sourceMap[screenKey] {
                     mapping[preparedURL.path] = sourceURL.path
                 }
             case .failure(let error):
                 let errorMsg = "Failed to prepare wallpaper: \(error.localizedDescription)"
                 HorizonDebugLog.shared.log("wallpaper.prepare.error", fields: [
                     "trigger": trigger,
-                    "screen": screenName,
+                    "screen": screenKey,
                     "error": error.localizedDescription
                 ])
                 print("Horizon: \(errorMsg)")
@@ -1701,14 +1662,20 @@ class WallpaperManager: ObservableObject {
         // displayID + mode) so the off-main worker doesn't have to query
         // main-actor-isolated properties.
         let jobs: [WallpaperScreenApplyJob] = screens.compactMap { screen in
-            guard let preparedURL = preparedURLsByScreen[screen.localizedName] else { return nil }
+            let key = stableScreenKey(for: screen)
+            guard let preparedURL = Self.valueForScreen(
+                preparedURLsByScreen,
+                displayID: displayIDString(for: screen),
+                localizedName: screen.localizedName
+            ) else { return nil }
             return WallpaperScreenApplyJob(
+                key: key,
                 name: screen.localizedName,
                 screen: SendableScreen(value: screen),
                 preparedURL: preparedURL,
                 options: desktopImageOptions(for: screen),
                 displayID: displayIDString(for: screen),
-                modeDescription: "\(self.mode(for: screen.localizedName))"
+                modeDescription: "\(self.mode(for: screen))"
             )
         }
 
@@ -1725,13 +1692,13 @@ class WallpaperManager: ObservableObject {
         // all-or-nothing semantics the sync version had).
         var appliedScreens: [NSScreen] = []
         var firstFailure: (name: String, error: NSError)?
-        let jobByName = Dictionary(uniqueKeysWithValues: jobs.map { ($0.name, $0) })
+        let jobByKey = Dictionary(uniqueKeysWithValues: jobs.map { ($0.key, $0) })
 
         for result in applyResults {
             switch result.outcome {
             case .success:
-                desiredURLPerScreen[Self.stableScreenKey(displayID: result.displayID, localizedName: result.name)] = result.preparedURL
-                if let job = jobByName[result.name] {
+                desiredURLPerScreen[result.key] = result.preparedURL
+                if let job = jobByKey[result.key] {
                     appliedScreens.append(job.screen.value)
                 }
                 let displayName = result.preparedURL.deletingPathExtension().lastPathComponent
@@ -1826,6 +1793,7 @@ class WallpaperManager: ObservableObject {
             }
             let taskEnd = CFAbsoluteTimeGetCurrent()
             return WallpaperScreenApplyResult(
+                key: job.key,
                 name: job.name,
                 preparedURL: job.preparedURL,
                 preparedFilename: job.preparedURL.lastPathComponent,
@@ -1863,9 +1831,17 @@ class WallpaperManager: ObservableObject {
 
             var liveURLsByScreen: [String: URL] = [:]
             for screen in screens {
-                guard expectedURLsByScreen[screen.localizedName] != nil,
-                      let liveURL = NSWorkspace.shared.desktopImageURL(for: screen) else { continue }
-                liveURLsByScreen[screen.localizedName] = liveURL
+                let key = stableScreenKey(for: screen)
+                let expectedKey: String
+                if expectedURLsByScreen[key] != nil {
+                    expectedKey = key
+                } else if expectedURLsByScreen[screen.localizedName] != nil {
+                    expectedKey = screen.localizedName
+                } else {
+                    continue
+                }
+                guard let liveURL = NSWorkspace.shared.desktopImageURL(for: screen) else { continue }
+                liveURLsByScreen[expectedKey] = liveURL
             }
 
             let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
@@ -1991,7 +1967,11 @@ class WallpaperManager: ObservableObject {
     ) {
         AppPerformanceMetrics.shared.recordWallpaperRollback()
         for screen in screens {
-            guard let previousURL = previousURLsByScreen[screen.localizedName] else { continue }
+            guard let previousURL = Self.valueForScreen(
+                previousURLsByScreen,
+                displayID: displayIDString(for: screen),
+                localizedName: screen.localizedName
+            ) else { continue }
             do {
                 try NSWorkspace.shared.setDesktopImageURL(previousURL, for: screen, options: desktopImageOptions(for: screen))
                 desiredURLPerScreen[stableScreenKey(for: screen)] = previousURL
@@ -2262,8 +2242,14 @@ extension WallpaperManager {
             entryIdentifiersByScreen: entry.wallpaperIdentifiersByScreen,
             currentIdentifiersByScreen: currentWallpaperIdentifiersByScreen(),
             entryIdentifier: storedIdentifier(for: entry),
-            currentIdentifier: currentWallpaperIdentifier()
+            currentIdentifier: currentWallpaperIdentifier(),
+            nameToKey: loadDisplayIdentityMap()
         )
+    }
+
+    func trackedWallpaperIdentifier(for screen: NSScreen) -> String? {
+        let identifiers = currentWallpaperIdentifiersByScreen()
+        return identifiers[stableScreenKey(for: screen)] ?? identifiers[screen.localizedName]
     }
 
     private func identifier(for url: URL) -> String {
@@ -2313,7 +2299,7 @@ extension WallpaperManager {
             activeScreenNames: Set(
                 NSScreen.screens
                     .filter { mode(for: $0) != .off }
-                    .map(\.localizedName)
+                    .map { stableScreenKey(for: $0) }
             ),
             trackedScreenNames: Set(currentWallpaperIdentifiersByScreen().keys)
         )
@@ -2426,9 +2412,9 @@ extension WallpaperManager {
         }
         UserDefaults.standard.set(liveIdentifier, forKey: currentWallpaperIdentifierKey)
         UserDefaults.standard.set(liveName, forKey: "currentWallpaperName")
-        if let screenName = preferredScreen?.localizedName {
+        if let preferredScreen {
             var identifiersByScreen = currentWallpaperIdentifiersByScreen()
-            identifiersByScreen[screenName] = liveIdentifier
+            identifiersByScreen[stableScreenKey(for: preferredScreen)] = liveIdentifier
             do {
                 let data = try JSONEncoder().encode(identifiersByScreen)
                 UserDefaults.standard.set(data, forKey: currentWallpaperIdentifiersByScreenKey)
@@ -2453,7 +2439,7 @@ extension WallpaperManager {
         let storedName = UserDefaults.standard.string(forKey: "currentWallpaperName") ?? ""
         let liveScreenURLs = NSScreen.screens.reduce(into: [String: URL]()) { result, screen in
             if let url = liveDesktopImageURL(preferredScreen: screen) {
-                result[screen.localizedName] = url
+                result[stableScreenKey(for: screen)] = url
             }
         }
 
@@ -2477,7 +2463,7 @@ extension WallpaperManager {
         let resolution = Self.resolveReconciledWallpaperState(
             storedName: storedName,
             currentStoredIdentifier: UserDefaults.standard.string(forKey: currentWallpaperIdentifierKey),
-            primaryScreenName: preferredDesktopScreen()?.localizedName,
+            primaryScreenName: preferredDesktopScreen().map { stableScreenKey(for: $0) },
             liveIdentifiersByScreen: liveIdentifiersByScreen,
             displayNameForIdentifier: { [self] identifier in
                 wallpaperURL(for: identifier).map(displayName(for:))
@@ -2487,8 +2473,8 @@ extension WallpaperManager {
         switch resolution {
         case .live(let primaryName, let primaryIdentifier, let identifiersByScreen):
             currentWallpaperName = primaryName
-            if let primaryScreenName = preferredDesktopScreen()?.localizedName,
-               let liveURL = liveScreenURLs[primaryScreenName] ?? liveScreenURLs.values.first,
+            if let primaryScreenKey = preferredDesktopScreen().map({ stableScreenKey(for: $0) }),
+               let liveURL = liveScreenURLs[primaryScreenKey] ?? liveScreenURLs.values.first,
                lastAppliedURL == nil || isCurrentTimeSlotWallpaper(liveURL) {
                 lastAppliedURL = liveURL
             }
@@ -2516,10 +2502,24 @@ extension WallpaperManager {
         entryIdentifiersByScreen: [String: String]?,
         currentIdentifiersByScreen: [String: String],
         entryIdentifier: String,
-        currentIdentifier: String?
+        currentIdentifier: String?,
+        nameToKey: [String: String] = [:]
     ) -> Bool {
         if let entryIdentifiersByScreen, !entryIdentifiersByScreen.isEmpty {
-            return entryIdentifiersByScreen == currentIdentifiersByScreen
+            if entryIdentifiersByScreen == currentIdentifiersByScreen {
+                return true
+            }
+            let remappedEntry = reconcileScreenKeyedValues(
+                existing: entryIdentifiersByScreen,
+                nameToKey: nameToKey,
+                currentKeys: Set(currentIdentifiersByScreen.keys)
+            )
+            if remappedEntry == currentIdentifiersByScreen {
+                return true
+            }
+            return !remappedEntry.isEmpty
+                && remappedEntry.count == currentIdentifiersByScreen.count
+                && remappedEntry.values.sorted() == currentIdentifiersByScreen.values.sorted()
         }
 
         return entryIdentifier == currentIdentifier
@@ -2585,6 +2585,29 @@ extension WallpaperManager {
             return displayID
         }
         return localizedName
+    }
+
+    /// Looks up a per-screen map by display ID first, then localizedName.
+    /// Name fallback covers in-flight or persisted maps that still use names.
+    static func valueForScreen<Value>(
+        _ map: [String: Value],
+        displayID: String,
+        localizedName: String
+    ) -> Value? {
+        let key = stableScreenKey(displayID: displayID, localizedName: localizedName)
+        return map[key] ?? map[localizedName]
+    }
+
+    /// After a successful launch preserve, persist the wallpaper's real slot
+    /// only. All Day and other slot-agnostic wallpapers keep a nil persisted
+    /// slot so the next launch does not treat the schedule slot as last applied.
+    static func persistedSlotToStampAfterLaunchPreserve(
+        persistedWallpaperSlot: String?
+    ) -> String? {
+        guard let persistedWallpaperSlot, !persistedWallpaperSlot.isEmpty else {
+            return nil
+        }
+        return persistedWallpaperSlot
     }
 
     /// Reconciles a dictionary keyed by either a stable display ID or a
@@ -2807,32 +2830,45 @@ extension WallpaperManager {
         activeScreenNames: [String],
         primaryScreenName: String
     ) -> HistoryRestoreResolution {
-        guard !activeScreenNames.isEmpty else {
+        resolveHistoryRestore(
+            storedIdentifiersByScreen: storedIdentifiersByScreen,
+            activeScreens: activeScreenNames.map { (key: $0, name: $0) },
+            primaryScreenKey: primaryScreenName
+        )
+    }
+
+    static func resolveHistoryRestore(
+        storedIdentifiersByScreen: [String: String],
+        activeScreens: [(key: String, name: String)],
+        primaryScreenKey: String
+    ) -> HistoryRestoreResolution {
+        guard !activeScreens.isEmpty else {
             return .failed
         }
 
         let fallbackIdentifier = storedIdentifiersByScreen.values.first
         var resolvedIdentifiersByScreen: [String: String] = [:]
 
-        for screenName in activeScreenNames {
-            guard let identifier = storedIdentifiersByScreen[screenName] ?? fallbackIdentifier else {
+        for screen in activeScreens {
+            guard let identifier = storedIdentifiersByScreen[screen.key]
+                ?? storedIdentifiersByScreen[screen.name]
+                ?? fallbackIdentifier else {
                 return .failed
             }
-            resolvedIdentifiersByScreen[screenName] = identifier
+            resolvedIdentifiersByScreen[screen.key] = identifier
         }
 
-        guard let primaryIdentifier = resolvedIdentifiersByScreen[primaryScreenName]
-            ?? resolvedIdentifiersByScreen[activeScreenNames[0]] else {
+        let resolvedPrimaryKey = resolvedIdentifiersByScreen[primaryScreenKey] != nil
+            ? primaryScreenKey
+            : activeScreens[0].key
+
+        guard let primaryIdentifier = resolvedIdentifiersByScreen[resolvedPrimaryKey] else {
             return .failed
         }
 
-        let resolvedPrimaryScreenName = resolvedIdentifiersByScreen[primaryScreenName] != nil
-            ? primaryScreenName
-            : activeScreenNames[0]
-
         return .resolved(
             resolvedIdentifiersByScreen: resolvedIdentifiersByScreen,
-            primaryScreenName: resolvedPrimaryScreenName,
+            primaryScreenName: resolvedPrimaryKey,
             primaryIdentifier: primaryIdentifier
         )
     }

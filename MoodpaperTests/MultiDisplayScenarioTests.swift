@@ -177,4 +177,45 @@ final class MultiDisplayScenarioTests: XCTestCase {
         XCTAssertEqual(merged["Built-in Retina Display"], "69733440")
         XCTAssertNil(merged["Projector"])
     }
+
+    func testNameKeyedRollbackMissesAfterDisplayRename() {
+        let previous = URL(fileURLWithPath: "/tmp/old.jpg")
+        let nameKeyed = ["Built-in Retina Display": previous]
+        let currentKey = WallpaperManager.stableScreenKey(
+            displayID: "69733440",
+            localizedName: "Color LCD"
+        )
+
+        XCTAssertEqual(currentKey, "69733440")
+        XCTAssertNil(nameKeyed[currentKey])
+        XCTAssertNil(nameKeyed["Color LCD"])
+    }
+
+    func testDisplayIDKeyedRollbackSurvivesDisplayRename() {
+        let previous = URL(fileURLWithPath: "/tmp/old.jpg")
+        let idKeyed = ["69733440": previous]
+
+        XCTAssertEqual(
+            WallpaperManager.valueForScreen(
+                idKeyed,
+                displayID: "69733440",
+                localizedName: "Color LCD"
+            ),
+            previous
+        )
+    }
+
+    func testValueForScreenFallsBackToLocalizedName() {
+        let previous = URL(fileURLWithPath: "/tmp/old.jpg")
+        let nameKeyed = ["Studio Display": previous]
+
+        XCTAssertEqual(
+            WallpaperManager.valueForScreen(
+                nameKeyed,
+                displayID: "4123456",
+                localizedName: "Studio Display"
+            ),
+            previous
+        )
+    }
 }

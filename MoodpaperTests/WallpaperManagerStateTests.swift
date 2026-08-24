@@ -307,6 +307,18 @@ final class WallpaperManagerStateTests: XCTestCase {
         )
     }
 
+    func testWallpaperStateMatchesRemapsNameKeyedHistoryOntoDisplayIDs() {
+        XCTAssertTrue(
+            WallpaperManager.wallpaperStateMatches(
+                entryIdentifiersByScreen: ["Studio Display": "morning-1"],
+                currentIdentifiersByScreen: ["4123456": "morning-1"],
+                entryIdentifier: "ignored",
+                currentIdentifier: "other",
+                nameToKey: ["Studio Display": "4123456"]
+            )
+        )
+    }
+
     func testWallpaperStateMatchesFallsBackToLegacyIdentifier() {
         XCTAssertTrue(
             WallpaperManager.wallpaperStateMatches(
@@ -729,6 +741,43 @@ final class WallpaperManagerStateTests: XCTestCase {
                 resolvedSlot: "afternoon",
                 secondsSinceLastChange: 600,
                 minimumInterval: 3 * 3600
+            )
+        )
+    }
+
+    func testLaunchPreserveDoesNotStampResolvedSlotForSlotAgnosticWallpaper() {
+        XCTAssertNil(
+            WallpaperManager.persistedSlotToStampAfterLaunchPreserve(
+                persistedWallpaperSlot: nil
+            )
+        )
+        XCTAssertEqual(
+            WallpaperManager.persistedSlotToStampAfterLaunchPreserve(
+                persistedWallpaperSlot: "morning"
+            ),
+            "morning"
+        )
+
+        let allDayIdentifier = "/Users/example/Library/Application Support/Moodpaper/Moods/work/AllDay/custom.jpg"
+        XCTAssertTrue(
+            WallpaperManager.shouldPreservePersistedWallpaperAtLaunchFromState(
+                hasPersistedWallpaper: true,
+                persistedLastAppliedSlot: nil,
+                latestHistorySlotID: nil,
+                persistedIdentifier: allDayIdentifier,
+                resolvedSlot: "afternoon",
+                secondsSinceLastChange: 600,
+                minimumInterval: 3 * 3600
+            )
+        )
+        XCTAssertNil(
+            WallpaperManager.resolvedPersistedWallpaperSlot(
+                persistedLastAppliedSlot: WallpaperManager.persistedSlotToStampAfterLaunchPreserve(
+                    persistedWallpaperSlot: nil
+                ),
+                latestHistorySlotID: nil,
+                persistedIdentifier: allDayIdentifier,
+                knownSlotIDs: HorizonScheduleDefaults.orderedSlotIDs
             )
         )
     }

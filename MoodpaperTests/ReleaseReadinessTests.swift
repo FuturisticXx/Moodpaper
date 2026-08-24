@@ -278,6 +278,14 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(source.contains("spaceKeys = (1...6)"))
         XCTAssertFalse(source.contains("SpacePinRow"))
         XCTAssertFalse(source.contains("Per-Space Wallpaper Style"))
+
+        let engine = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperManager.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(engine.contains("func setPinForSpace"))
+        XCTAssertFalse(engine.contains("func pinnedSlot(forSpace"))
+        XCTAssertTrue(engine.contains("clearVisitOrdinalSpacePins"))
     }
 
     func testWallpaperEngineReconcilesDisplayTopologyOnScreenParameterChanges() throws {
@@ -290,6 +298,9 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(source.contains("reconcileDisplayTopology(reason: \"screenParametersChanged\", reapply: true)"))
         XCTAssertTrue(source.contains("stableScreenKey"))
         XCTAssertTrue(source.contains("shouldPreservePersistedWallpaperAtLaunchFromState"))
+        XCTAssertTrue(source.contains("previousURLsByScreen[key]"))
+        XCTAssertTrue(source.contains("sourceURLsByScreen[key]"))
+        XCTAssertTrue(source.contains("persistedSlotToStampAfterLaunchPreserve"))
         XCTAssertFalse(source.contains("persistedWallpaperSlot: nil"))
     }
 
