@@ -552,7 +552,6 @@ private struct ScheduleSlotRow: View {
 
 struct MultiDisplaySettingsView: View {
     @EnvironmentObject private var wallpaperManager: WallpaperManager
-    @AppStorage(HorizonScheduleDefaults.syncAllSpacesKey) private var showSpacesCards: Bool = HorizonScheduleDefaults.syncAllSpacesDefault
 
     var body: some View {
         ScrollView {
@@ -584,17 +583,7 @@ struct MultiDisplaySettingsView: View {
                 SyncTransitionTimingCard()
 
                 // Sync to all Spaces toggle
-                AllSpacesSyncCard(onToggle: { enabled in
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showSpacesCards = enabled
-                    }
-                })
-
-                // Space pinning, only shown when Spaces sync is on
-                if showSpacesCards {
-                    SpacePinningCard()
-                        .environmentObject(wallpaperManager)
-                }
+                AllSpacesSyncCard()
             }
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -662,87 +651,6 @@ private struct AllSpacesSyncCard: View {
         }
         .padding(16)
         .liquidGlassCard()
-    }
-}
-
-private struct SpacePinningCard: View {
-    @EnvironmentObject private var wallpaperManager: WallpaperManager
-    private let slots = HorizonScheduleDefaults.orderedSlotIDs
-    private let spaceKeys = (1...6).map { "\($0)" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(
-                        LinearGradient(colors: [.purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-                    .accessibilityHidden(true)
-                Text("Per-Space Wallpaper Style")
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-            }
-
-            Text("Each Space can follow the time-of-day schedule or always use a specific wallpaper style.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(spacing: 0) {
-                ForEach(Array(spaceKeys.enumerated()), id: \.element) { index, key in
-                    SpacePinRow(spaceKey: key, spaceLabel: "Space \(key)", slots: slots)
-                        .environmentObject(wallpaperManager)
-                    if index < spaceKeys.count - 1 {
-                        Divider().opacity(0.35).padding(.leading, 46)
-                    }
-                }
-            }
-            .padding(.top, 4)
-        }
-        .padding(16)
-        .liquidGlassCard()
-    }
-}
-
-private struct SpacePinRow: View {
-    @EnvironmentObject private var wallpaperManager: WallpaperManager
-    let spaceKey: String
-    let spaceLabel: String
-    let slots: [String]
-
-    private var slotOptions: [(id: String, title: String)] {
-        [("", "Follow schedule")] + slots.map { id in
-            let title = HorizonScheduleSettings.timeSlots.first(where: { $0.id == id })?.title ?? id
-            return (id: id, title: title)
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "rectangle.stack")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
-            Text(spaceLabel)
-                .font(.system(size: 13, weight: .medium))
-            Spacer()
-            Picker("", selection: Binding(
-                get: { wallpaperManager.pinnedSlot(forSpace: spaceKey) ?? "" },
-                set: { newVal in
-                    wallpaperManager.setPinForSpace(spaceKey, slotID: newVal.isEmpty ? nil : newVal)
-                    wallpaperManager.coveredSpaceIDs.removeAll()
-                }
-            )) {
-                ForEach(slotOptions, id: \.id) { option in
-                    Text(option.title).tag(option.id)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(width: 150)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 }
 

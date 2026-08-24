@@ -64,4 +64,12 @@ final class UserDefaultsMigrationTests: XCTestCase {
         XCTAssertEqual(decoded["Studio Display"], "morning-4")
         XCTAssertEqual(decoded["Projector"], "morning-4")
     }
+
+    func testClearVisitOrdinalSpacePinsRemovesLegacyKey() {
+        defaults.set(Data([1, 2, 3]), forKey: AppDelegate.UserDefaultsMigration.spacePinsKey)
+
+        AppDelegate.UserDefaultsMigration.clearVisitOrdinalSpacePins(defaults: defaults)
+
+        XCTAssertNil(defaults.object(forKey: AppDelegate.UserDefaultsMigration.spacePinsKey))
+    }
 }

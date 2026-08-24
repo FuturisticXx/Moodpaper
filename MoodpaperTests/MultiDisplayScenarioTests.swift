@@ -87,4 +87,135 @@ final class MultiDisplayScenarioTests: XCTestCase {
         XCTAssertEqual(restoredIdentifiers["Studio Display"], "morning-1")
         XCTAssertEqual(restoredIdentifiers["Projector"], "afternoon-2")
     }
+
+    func testStableScreenKeyPrefersDisplayIDOverLocalizedName() {
+        XCTAssertEqual(
+            WallpaperManager.stableScreenKey(displayID: "69733440", localizedName: "Built-in Retina Display"),
+            "69733440"
+        )
+        XCTAssertEqual(
+            WallpaperManager.stableScreenKey(displayID: "unknown", localizedName: "Studio Display"),
+            "Studio Display"
+        )
+        XCTAssertEqual(
+            WallpaperManager.stableScreenKey(displayID: "", localizedName: "Studio Display"),
+            "Studio Display"
+        )
+    }
+
+    func testScreenKeyedStateRemapsLocalizedNameToDisplayID() {
+        let morning = URL(fileURLWithPath: "/tmp/morning.jpg")
+        let evening = URL(fileURLWithPath: "/tmp/evening.jpg")
+
+        let remapped = WallpaperManager.reconcileScreenKeyedValues(
+            existing: [
+                "Built-in Retina Display": morning,
+                "Studio Display": evening
+            ],
+            nameToKey: [
+                "Built-in Retina Display": "69733440",
+                "Studio Display": "4123456"
+            ],
+            currentKeys: ["69733440", "4123456"]
+        )
+
+        XCTAssertEqual(remapped["69733440"], morning)
+        XCTAssertEqual(remapped["4123456"], evening)
+        XCTAssertNil(remapped["Built-in Retina Display"])
+    }
+
+    func testScreenKeyedStatePrunesDisconnectedDisplays() {
+        let morning = URL(fileURLWithPath: "/tmp/morning.jpg")
+        let projector = URL(fileURLWithPath: "/tmp/projector.jpg")
+
+        let remapped = WallpaperManager.reconcileScreenKeyedValues(
+            existing: [
+                "69733440": morning,
+                "999999": projector
+            ],
+            nameToKey: ["Color LCD": "69733440"],
+            currentKeys: ["69733440"]
+        )
+
+        XCTAssertEqual(remapped["69733440"], morning)
+        XCTAssertNil(remapped["999999"])
+    }
+
+    func testNameKeyedScreenStateRemapsRenameThroughDisplayID() {
+        let remapped = WallpaperManager.remapNameKeyedScreenValues(
+            existing: [
+                "Built-in Retina Display": "morning-1",
+                "Projector": "afternoon-2"
+            ],
+            previousNameToKey: [
+                "Built-in Retina Display": "69733440",
+                "Projector": "8888"
+            ],
+            currentNameToKey: [
+                "Color LCD": "69733440"
+            ],
+            currentNames: ["Color LCD"]
+        )
+
+        XCTAssertEqual(remapped["Color LCD"], "morning-1")
+        XCTAssertNil(remapped["Built-in Retina Display"])
+        XCTAssertNil(remapped["Projector"])
+    }
+
+    func testDisplayIdentityMapKeepsPreviousNamesForStillConnectedIDs() {
+        let merged = WallpaperManager.mergedDisplayIdentityMap(
+            previous: [
+                "Built-in Retina Display": "69733440",
+                "Projector": "8888"
+            ],
+            currentNameToKey: [
+                "Color LCD": "69733440"
+            ]
+        )
+
+        XCTAssertEqual(merged["Color LCD"], "69733440")
+        XCTAssertEqual(merged["Built-in Retina Display"], "69733440")
+        XCTAssertNil(merged["Projector"])
+    }
+
+    func testNameKeyedRollbackMissesAfterDisplayRename() {
+        let previous = URL(fileURLWithPath: "/tmp/old.jpg")
+        let nameKeyed = ["Built-in Retina Display": previous]
+        let currentKey = WallpaperManager.stableScreenKey(
+            displayID: "69733440",
+            localizedName: "Color LCD"
+        )
+
+        XCTAssertEqual(currentKey, "69733440")
+        XCTAssertNil(nameKeyed[currentKey])
+        XCTAssertNil(nameKeyed["Color LCD"])
+    }
+
+    func testDisplayIDKeyedRollbackSurvivesDisplayRename() {
+        let previous = URL(fileURLWithPath: "/tmp/old.jpg")
+        let idKeyed = ["69733440": previous]
+
+        XCTAssertEqual(
+            WallpaperManager.valueForScreen(
+                idKeyed,
+                displayID: "69733440",
+                localizedName: "Color LCD"
+            ),
+            previous
+        )
+    }
+
+    func testValueForScreenFallsBackToLocalizedName() {
+        let previous = URL(fileURLWithPath: "/tmp/old.jpg")
+        let nameKeyed = ["Studio Display": previous]
+
+        XCTAssertEqual(
+            WallpaperManager.valueForScreen(
+                nameKeyed,
+                displayID: "4123456",
+                localizedName: "Studio Display"
+            ),
+            previous
+        )
+    }
 }
