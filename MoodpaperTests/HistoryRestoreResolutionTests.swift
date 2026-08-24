@@ -46,4 +46,20 @@ final class HistoryRestoreResolutionTests: XCTestCase {
 
         XCTAssertEqual(resolution, .failed)
     }
+
+    func testRestoreMatchesStoredNameKeysOntoDisplayIDs() {
+        let resolution = WallpaperManager.resolveHistoryRestore(
+            storedIdentifiersByScreen: ["Studio Display": "morning-1"],
+            activeScreens: [(key: "4123456", name: "Studio Display")],
+            primaryScreenKey: "4123456"
+        )
+
+        guard case .resolved(let resolved, let primaryScreenKey, let primaryIdentifier) = resolution else {
+            return XCTFail("Expected stored name keys to resolve onto display IDs")
+        }
+
+        XCTAssertEqual(resolved["4123456"], "morning-1")
+        XCTAssertEqual(primaryScreenKey, "4123456")
+        XCTAssertEqual(primaryIdentifier, "morning-1")
+    }
 }
