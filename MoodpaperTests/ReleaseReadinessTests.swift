@@ -264,6 +264,35 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(source.contains("importAllDayItems"))
     }
 
+    func testSettingsDoesNotPresentVisitOrdinalsAsMissionControlSpaces() throws {
+        // Space pins are keyed by spaceVisitCounter (Nth visit after launch),
+        // not durable Mission Control Space IDs. The settings card that labeled
+        // those keys "Space 1"..."Space 6" is hidden until a public Space
+        // identifier exists.
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/HorizonSettingsView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains("SpacePinningCard"))
+        XCTAssertFalse(source.contains("spaceKeys = (1...6)"))
+        XCTAssertFalse(source.contains("SpacePinRow"))
+        XCTAssertFalse(source.contains("Per-Space Wallpaper Style"))
+    }
+
+    func testWallpaperEngineReconcilesDisplayTopologyOnScreenParameterChanges() throws {
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperManager.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("didChangeScreenParametersNotification"))
+        XCTAssertTrue(source.contains("reconcileDisplayTopology(reason: \"screenParametersChanged\", reapply: true)"))
+        XCTAssertTrue(source.contains("stableScreenKey"))
+        XCTAssertTrue(source.contains("shouldPreservePersistedWallpaperAtLaunchFromState"))
+        XCTAssertFalse(source.contains("persistedWallpaperSlot: nil"))
+    }
+
     func testSettingsNavigationDoesNotExposeDebugOrDiagnosticsSection() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/HorizonSettingsView.swift"),

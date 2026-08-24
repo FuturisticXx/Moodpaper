@@ -217,6 +217,8 @@ class WallpaperManager: ObservableObject {
     private let displayModesKey = "schedule.displayModes"
     private let maxHistoryCount = 50
     private let lastWallpaperChangeAtKey = "lastWallpaperChangeAt"
+    private let lastAppliedWallpaperSlotKey = "lastAppliedWallpaperSlot"
+    private let displayIdentityMapKey = "schedule.displayIdentityMap"
     private let focusModeEnabledKey = "focus.enabled"
     private let focusSlotKey = "focus.slot"
     private let preparedWallpaperSourceMapKey = "preparedWallpaperSourceMap"
@@ -245,12 +247,14 @@ class WallpaperManager: ObservableObject {
     var lastWallpaperChangeDate: Date? { lastWallpaperChangeAt }
 
     // Monotonically incrementing counter that advances each time the active Space changes.
-    // Used as a relative Space key for per-Space pinning. Not a macOS Space UUID.
-    // macOS does not expose Space identifiers via public APIs.
+    // Used only for coverage counting. Not a macOS Space UUID.
+    // macOS does not expose durable Space identifiers via public APIs.
     private var spaceVisitCounter: Int = 0
 
-    // Per-Space slot pins, keyed by Space visit counter string ("0", "1", ...), value is slot ID
-    // Stored in UserDefaults as JSON.
+    // Legacy per-Space slot pins, keyed by Space visit counter string ("1", "2", ...).
+    // These are visit ordinals, not Mission Control Space IDs. The settings card
+    // is hidden until a public Space identifier exists, and leftover pins are
+    // not applied.
     private let spacePinsKey = "schedule.spacePins"
 
     var spacePins: [String: String] {
@@ -347,6 +351,7 @@ class WallpaperManager: ObservableObject {
         loadHistory()
         loadDisplayModes()
         loadLastWallpaperChangeDate()
+        reconcileDisplayTopology(reason: "init", reapply: false)
         reconcileCurrentWallpaperState()
         refreshPreparedWallpaperStateIfNeeded()
         validateStateInvariants(context: "init")
@@ -435,6 +440,22 @@ class WallpaperManager: ObservableObject {
         UserDefaults.standard.set(lastWallpaperChangeAt, forKey: lastWallpaperChangeAtKey)
     }
 
+    private func rememberAppliedSlot(_ slot: String) {
+        lastSlot = slot
+        persistLastAppliedSlot(slot)
+    }
+
+    private func persistLastAppliedSlot(_ slot: String) {
+        guard !slot.isEmpty else { return }
+        UserDefaults.standard.set(slot, forKey: lastAppliedWallpaperSlotKey)
+    }
+
+    private func persistedLastAppliedSlot() -> String? {
+        let stored = UserDefaults.standard.string(forKey: lastAppliedWallpaperSlotKey)
+        guard let stored, !stored.isEmpty else { return nil }
+        return stored
+    }
+
     var todayHistory: [WallpaperHistoryEntry] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
@@ -489,11 +510,14 @@ class WallpaperManager: ObservableObject {
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
-        ) { _ in
+        ) { [weak self] _ in
+            guard let self else { return }
             HorizonDebugLog.shared.log("screen.paramsChanged", fields: [
                 "screens": NSScreen.screens.map { $0.localizedName }.joined(separator: ","),
-                "screenCount": NSScreen.screens.count
+                "screenCount": NSScreen.screens.count,
+                "displayIDs": NSScreen.screens.map { self.displayIDString(for: $0) }.joined(separator: ",")
             ])
+            self.reconcileDisplayTopology(reason: "screenParametersChanged", reapply: true)
         }
 
         // System sleep / wake — wallpaper state can drift across these transitions.
@@ -571,17 +595,14 @@ class WallpaperManager: ObservableObject {
                         let visitKey = "\(self.spaceVisitCounter)"
                         self.coveredSpaceIDs.insert(visitKey)
 
-                        // Per-Space pin selects a specific slot, this IS a new wallpaper pick
-                        if let pinnedSlot = self.pinnedSlot(forSpace: visitKey) {
+                        // Visit-ordinal pins are not Mission Control Space IDs.
+                        // Ignore leftover pins until durable Space identifiers exist.
+                        if self.pinnedSlot(forSpace: visitKey) != nil {
                             HorizonDebugLog.shared.log("space.change.handled", fields: [
-                                "path": "pinnedSlot",
+                                "path": "pinIgnored",
                                 "visitKey": visitKey,
-                                "slot": pinnedSlot
+                                "reason": "visitOrdinalPinsDisabled"
                             ])
-                            self.withApplyTrigger("activeSpaceDidChange") {
-                                self.setWallpaperForSlot(pinnedSlot)
-                            }
-                            return
                         }
 
                         // Reapply the correct wallpaper per screen to the newly active Space.
@@ -629,12 +650,12 @@ class WallpaperManager: ObservableObject {
     /// avoiding redundant disk I/O.  `desiredURLPerScreen` ensures that
     /// independent displays get their own image reapplied (not the shared URL).
     private func reapplyDesiredWallpapers() {
-        let screens = NSScreen.screens.filter { self.mode(for: $0.localizedName) != .off }
+        let screens = NSScreen.screens.filter { self.mode(for: $0) != .off }
         guard !screens.isEmpty else { return }
 
         for screen in screens {
             // Look up the correct URL for this screen; fall back to the shared URL
-            guard let targetURL = desiredURLPerScreen[screen.localizedName] ?? lastAppliedURL else { continue }
+            guard let targetURL = desiredURLPerScreen[stableScreenKey(for: screen)] ?? lastAppliedURL else { continue }
 
             // Ask macOS what this Space currently has — the source of truth
             if let currentURL = NSWorkspace.shared.desktopImageURL(for: screen),
@@ -698,6 +719,117 @@ class WallpaperManager: ObservableObject {
             return "\(num.uint32Value)"
         }
         return "unknown"
+    }
+
+    private func stableScreenKey(for screen: NSScreen) -> String {
+        Self.stableScreenKey(displayID: displayIDString(for: screen), localizedName: screen.localizedName)
+    }
+
+    private func currentStableKey(forScreenName name: String) -> String? {
+        NSScreen.screens.first { $0.localizedName == name }.map { stableScreenKey(for: $0) }
+    }
+
+    private func currentScreenIdentities() -> [(key: String, name: String)] {
+        NSScreen.screens.map { screen in
+            (key: stableScreenKey(for: screen), name: screen.localizedName)
+        }
+    }
+
+    private func loadDisplayIdentityMap() -> [String: String] {
+        guard let data = UserDefaults.standard.data(forKey: displayIdentityMapKey) else {
+            return [:]
+        }
+        do {
+            return try JSONDecoder().decode([String: String].self, from: data)
+        } catch {
+            print("[WallpaperManager] Failed to decode displayIdentityMap: \(error)")
+            return [:]
+        }
+    }
+
+    private func saveDisplayIdentityMap(_ map: [String: String]) {
+        do {
+            let data = try JSONEncoder().encode(map)
+            UserDefaults.standard.set(data, forKey: displayIdentityMapKey)
+        } catch {
+            print("[WallpaperManager] Failed to encode displayIdentityMap: \(error)")
+        }
+    }
+
+    /// Remaps in-memory and persisted per-screen state onto current displays
+    /// using NSScreenNumber when available. Prunes keys for screens that are
+    /// gone. Optionally reapplies wallpapers after a live topology change.
+    private func reconcileDisplayTopology(reason: String, reapply: Bool) {
+        let identities = currentScreenIdentities()
+        guard !identities.isEmpty else {
+            HorizonDebugLog.shared.log("screen.topologyReconciled", fields: [
+                "reason": reason,
+                "screens": "none",
+                "skipped": "noScreens",
+                "reapply": reapply
+            ])
+            if reapply {
+                checkAndUpdateWallpaper()
+            }
+            return
+        }
+
+        let currentKeys = Set(identities.map(\.key))
+        let currentNames = Set(identities.map(\.name))
+        let currentNameToKey = Dictionary(uniqueKeysWithValues: identities.map { ($0.name, $0.key) })
+        let previousNameToKey = loadDisplayIdentityMap()
+        let combinedNameToKey = Self.mergedDisplayIdentityMap(
+            previous: previousNameToKey,
+            currentNameToKey: currentNameToKey
+        )
+
+        desiredURLPerScreen = Self.reconcileScreenKeyedValues(
+            existing: desiredURLPerScreen,
+            nameToKey: combinedNameToKey,
+            currentKeys: currentKeys
+        )
+
+        displayModes = Self.reconcileScreenKeyedValues(
+            existing: displayModes,
+            nameToKey: combinedNameToKey,
+            currentKeys: currentKeys
+        )
+        saveDisplayModes()
+
+        let remappedIdentifiers = Self.remapNameKeyedScreenValues(
+            existing: currentWallpaperIdentifiersByScreen(),
+            previousNameToKey: previousNameToKey,
+            currentNameToKey: currentNameToKey,
+            currentNames: currentNames
+        )
+        if remappedIdentifiers != currentWallpaperIdentifiersByScreen() {
+            persistWallpaperIdentifiersByScreen(remappedIdentifiers)
+        }
+
+        saveDisplayIdentityMap(combinedNameToKey)
+
+        HorizonDebugLog.shared.log("screen.topologyReconciled", fields: [
+            "reason": reason,
+            "screens": identities.map(\.name).joined(separator: ","),
+            "displayIDs": identities.map(\.key).joined(separator: ","),
+            "desiredCount": desiredURLPerScreen.count,
+            "reapply": reapply
+        ])
+
+        guard reapply else { return }
+        withApplyTrigger("screenParametersChanged") {
+            reapplyDesiredWallpapers()
+        }
+        checkAndUpdateWallpaper()
+    }
+
+    private func persistWallpaperIdentifiersByScreen(_ identifiersByScreen: [String: String]) {
+        do {
+            let data = try JSONEncoder().encode(identifiersByScreen)
+            UserDefaults.standard.set(data, forKey: currentWallpaperIdentifiersByScreenKey)
+        } catch {
+            print("[WallpaperManager] Failed to encode currentWallpaperIdentifiersByScreen: \(error)")
+        }
     }
 
     // Called when wallpaper rotates to a new image, reset coverage count for UI
@@ -783,22 +915,33 @@ class WallpaperManager: ObservableObject {
         let minimumInterval = currentDwellInterval
 
         // Launch preservation: lastSlot is in-memory only, so every launch
-        // lands here with needsInitialSet — but a relaunch is not a reason to
+        // lands here with needsInitialSet. A relaunch is not a reason to
         // rotate. If the persisted wallpaper still fits the current slot and
         // the persisted dwell clock hasn't expired, keep it and just repair
-        // the bookkeeping.
+        // the bookkeeping. The last applied slot is persisted (or derived
+        // from history or the identifier) so a slot change while quit still
+        // rotates.
         let persistedIdentifier = currentWallpaperIdentifier()
-        let preservePersistedAtLaunch = needsInitialSet && Self.shouldPreservePersistedWallpaperAtLaunch(
+        let persistedWallpaperSlot = Self.resolvedPersistedWallpaperSlot(
+            persistedLastAppliedSlot: persistedLastAppliedSlot(),
+            latestHistorySlotID: history.first?.slotID,
+            persistedIdentifier: persistedIdentifier,
+            knownSlotIDs: HorizonScheduleDefaults.orderedSlotIDs
+        )
+        let preservePersistedAtLaunch = needsInitialSet && Self.shouldPreservePersistedWallpaperAtLaunchFromState(
             hasPersistedWallpaper: persistedIdentifier != nil,
-            persistedWallpaperSlot: nil,
+            persistedLastAppliedSlot: persistedLastAppliedSlot(),
+            latestHistorySlotID: history.first?.slotID,
+            persistedIdentifier: persistedIdentifier,
             resolvedSlot: resolvedSlot,
             secondsSinceLastChange: lastWallpaperChangeAt.map { Date().timeIntervalSince($0) },
             minimumInterval: minimumInterval
         )
         if preservePersistedAtLaunch {
-            lastSlot = resolvedSlot
+            rememberAppliedSlot(resolvedSlot)
             HorizonDebugLog.shared.log("schedule.launchPreserve", fields: [
                 "persisted": persistedIdentifier ?? "none",
+                "persistedSlot": persistedWallpaperSlot ?? "none",
                 "slot": resolvedSlot
             ])
         }
@@ -809,7 +952,7 @@ class WallpaperManager: ObservableObject {
             if slotChanged {
                 sendSlotChangeNotification(for: resolvedSlot)
             }
-            lastSlot = resolvedSlot
+            rememberAppliedSlot(resolvedSlot)
             pendingHistorySlot = resolvedSlot  // HZN-006: recorded in setWallpaper on success
             withApplyTrigger("scheduledTick") {
                 setWallpaperForSlot(
@@ -831,7 +974,7 @@ class WallpaperManager: ObservableObject {
 
         guard shouldRotate else { return }
 
-        lastSlot = resolvedSlot
+        rememberAppliedSlot(resolvedSlot)
         pendingHistorySlot = resolvedSlot  // HZN-006: recorded in setWallpaper on success
         withApplyTrigger("scheduledTick") {
             setWallpaperForSlot(
@@ -916,11 +1059,11 @@ class WallpaperManager: ObservableObject {
         // skip landed a midday wallpaper at 10 PM, the next 60s tick read
         // lastSlot=midday vs evening, declared a phantom slot transition, and
         // rotated the wallpaper the user had just picked.
-        lastSlot = Self.postSkipLastSlot(
+        rememberAppliedSlot(Self.postSkipLastSlot(
             selectionSlot: resolvedSlot,
             timeBasedSlot: resolvedSlotForSchedule(from: currentTimeSlot()),
             focusMeetingActive: focusMeetingActive
-        )
+        ))
         lastWallpaperChangeAt = Date()
     }
 
@@ -976,7 +1119,7 @@ class WallpaperManager: ObservableObject {
         withApplyTrigger("moodChange") {
             setWallpaperForSlot(resolvedSlot, ignoreMood: false)
         }
-        lastSlot = resolvedSlot
+        rememberAppliedSlot(resolvedSlot)
         lastWallpaperChangeAt = Date()
     }
 
@@ -1309,7 +1452,7 @@ class WallpaperManager: ObservableObject {
         AnalyticsManager.shared.log(.wallpaperChanged, metadata: ["source": source])
 
         // HZN-003: Exclude screens with display mode set to .off
-        let screens = NSScreen.screens.filter { self.mode(for: $0.localizedName) != .off }
+        let screens = NSScreen.screens.filter { self.mode(for: $0) != .off }
         guard !screens.isEmpty else {
             let errorMsg = "No displays detected"
             print("Horizon: \(errorMsg)")
@@ -1408,7 +1551,7 @@ class WallpaperManager: ObservableObject {
         isChangingWallpaper = true
         lastError = nil
 
-        let screens = NSScreen.screens.filter { self.mode(for: $0.localizedName) != .off }
+        let screens = NSScreen.screens.filter { self.mode(for: $0) != .off }
         guard !screens.isEmpty else {
             lastError = "No displays detected"
             isChangingWallpaper = false
@@ -1473,7 +1616,7 @@ class WallpaperManager: ObservableObject {
         slotSnapshot: String
     ) async -> Bool {
         let applyStart = CFAbsoluteTimeGetCurrent()
-        let screens = NSScreen.screens.filter { self.mode(for: $0.localizedName) != .off }
+        let screens = NSScreen.screens.filter { self.mode(for: $0) != .off }
 
         // Set up prepared directory on main (creates if missing).
         let preparedDirectory: URL
@@ -1587,7 +1730,7 @@ class WallpaperManager: ObservableObject {
         for result in applyResults {
             switch result.outcome {
             case .success:
-                desiredURLPerScreen[result.name] = result.preparedURL
+                desiredURLPerScreen[Self.stableScreenKey(displayID: result.displayID, localizedName: result.name)] = result.preparedURL
                 if let job = jobByName[result.name] {
                     appliedScreens.append(job.screen.value)
                 }
@@ -1851,7 +1994,7 @@ class WallpaperManager: ObservableObject {
             guard let previousURL = previousURLsByScreen[screen.localizedName] else { continue }
             do {
                 try NSWorkspace.shared.setDesktopImageURL(previousURL, for: screen, options: desktopImageOptions(for: screen))
-                desiredURLPerScreen[screen.localizedName] = previousURL
+                desiredURLPerScreen[stableScreenKey(for: screen)] = previousURL
                 HorizonDebugLog.shared.log("wallpaper.rollback", fields: [
                     "trigger": trigger,
                     "screen": screen.localizedName,
@@ -1928,12 +2071,24 @@ class WallpaperManager: ObservableObject {
         return options
     }
 
+    func mode(for screen: NSScreen) -> DisplayMode {
+        mode(for: screen.localizedName)
+    }
+
     func mode(for screenName: String) -> DisplayMode {
-        displayModes[screenName] ?? .synchronized
+        if let stableKey = currentStableKey(forScreenName: screenName),
+           let mode = displayModes[stableKey] {
+            return mode
+        }
+        return displayModes[screenName] ?? .synchronized
     }
 
     func setMode(_ mode: DisplayMode, for screenName: String) {
-        displayModes[screenName] = mode
+        let key = currentStableKey(forScreenName: screenName) ?? screenName
+        if key != screenName {
+            displayModes.removeValue(forKey: screenName)
+        }
+        displayModes[key] = mode
         saveDisplayModes()
     }
 
@@ -2157,7 +2312,7 @@ extension WallpaperManager {
         let violations = Self.stateInvariantViolations(
             activeScreenNames: Set(
                 NSScreen.screens
-                    .filter { mode(for: $0.localizedName) != .off }
+                    .filter { mode(for: $0) != .off }
                     .map(\.localizedName)
             ),
             trackedScreenNames: Set(currentWallpaperIdentifiersByScreen().keys)
@@ -2422,12 +2577,169 @@ extension WallpaperManager {
         return identifier.hasPrefix(currentSlot)
     }
 
+    /// Stable dictionary key for a screen. Prefers CGDirectDisplayID
+    /// (NSScreenNumber) over localizedName, which changes with language
+    /// and display rename.
+    static func stableScreenKey(displayID: String, localizedName: String) -> String {
+        if !displayID.isEmpty && displayID != "unknown" {
+            return displayID
+        }
+        return localizedName
+    }
+
+    /// Reconciles a dictionary keyed by either a stable display ID or a
+    /// localized screen name. Values whose keys are still current IDs are
+    /// kept. Values keyed by a name that now maps to an ID move to that ID.
+    /// Everything else is treated as stale and dropped.
+    static func reconcileScreenKeyedValues<Value>(
+        existing: [String: Value],
+        nameToKey: [String: String],
+        currentKeys: Set<String>
+    ) -> [String: Value] {
+        var result: [String: Value] = [:]
+        for (key, value) in existing {
+            if currentKeys.contains(key) {
+                result[key] = value
+                continue
+            }
+            if let stableKey = nameToKey[key], currentKeys.contains(stableKey) {
+                if result[stableKey] == nil {
+                    result[stableKey] = value
+                }
+            }
+        }
+        return result
+    }
+
+    /// Remaps a name-keyed persisted dictionary across a rename by joining
+    /// previous and current names through the stable display key. Drops
+    /// entries for screens that are no longer connected.
+    static func remapNameKeyedScreenValues<Value>(
+        existing: [String: Value],
+        previousNameToKey: [String: String],
+        currentNameToKey: [String: String],
+        currentNames: Set<String>
+    ) -> [String: Value] {
+        var keyToCurrentName: [String: String] = [:]
+        for (name, key) in currentNameToKey {
+            keyToCurrentName[key] = name
+        }
+
+        var result: [String: Value] = [:]
+        for (oldName, value) in existing {
+            if currentNames.contains(oldName) {
+                result[oldName] = value
+                continue
+            }
+            if let key = previousNameToKey[oldName], let newName = keyToCurrentName[key] {
+                if result[newName] == nil {
+                    result[newName] = value
+                }
+            }
+        }
+        return result
+    }
+
+    /// Keeps previous name-to-ID mappings whose IDs are still current so a
+    /// rename can be resolved, then overlays the live names.
+    static func mergedDisplayIdentityMap(
+        previous: [String: String],
+        currentNameToKey: [String: String]
+    ) -> [String: String] {
+        let currentKeys = Set(currentNameToKey.values)
+        var result = previous.filter { currentKeys.contains($0.value) }
+        for (name, key) in currentNameToKey {
+            result[name] = key
+        }
+        return result
+    }
+
+    /// Resolves the slot of the wallpaper that was last applied, for launch
+    /// preservation. Prefers the persisted last-applied slot, then the newest
+    /// history entry, then a slot derived from the wallpaper identifier.
+    static func resolvedPersistedWallpaperSlot(
+        persistedLastAppliedSlot: String?,
+        latestHistorySlotID: String?,
+        persistedIdentifier: String?,
+        knownSlotIDs: [String]
+    ) -> String? {
+        if let persistedLastAppliedSlot, !persistedLastAppliedSlot.isEmpty {
+            return persistedLastAppliedSlot
+        }
+        if let latestHistorySlotID, !latestHistorySlotID.isEmpty {
+            return latestHistorySlotID
+        }
+        if let persistedIdentifier {
+            return slotForWallpaperIdentifier(persistedIdentifier, knownSlotIDs: knownSlotIDs)
+        }
+        return nil
+    }
+
+    /// Derives a schedule slot from a wallpaper identifier when history and
+    /// the persisted last-applied slot are missing. User library files live
+    /// under Moods/<moodID>/<TimeSlot.rawValue>/. Bundled names use a slot
+    /// prefix. All Day and unknown identifiers return nil (slot-agnostic).
+    static func slotForWallpaperIdentifier(_ identifier: String, knownSlotIDs: [String]) -> String? {
+        let url = URL(fileURLWithPath: identifier)
+        let components = url.pathComponents
+        if let moodsIndex = components.firstIndex(of: "Moods"),
+           moodsIndex + 2 < components.count {
+            let folder = components[moodsIndex + 2]
+            if folder == "AllDay" {
+                return nil
+            }
+            if knownSlotIDs.contains(folder) {
+                return folder
+            }
+            if let slot = TimeSlot.allCases.first(where: { $0.rawValue == folder }) {
+                return slot.slotID
+            }
+        }
+
+        let base = url.deletingPathExtension().lastPathComponent
+        let sortedSlots = knownSlotIDs.sorted { $0.count > $1.count }
+        for slot in sortedSlots {
+            if base == slot || base.hasPrefix("\(slot)-") || base.hasPrefix("\(slot)_") {
+                return slot
+            }
+        }
+        return nil
+    }
+
+    /// Production launch-preserve path: resolve the last applied slot from
+    /// persisted bookkeeping, history, or the identifier, then apply the
+    /// dwell-and-slot helper. Tests should call this (not only the inner
+    /// helper) so a nil production argument cannot regress again.
+    static func shouldPreservePersistedWallpaperAtLaunchFromState(
+        hasPersistedWallpaper: Bool,
+        persistedLastAppliedSlot: String?,
+        latestHistorySlotID: String?,
+        persistedIdentifier: String?,
+        knownSlotIDs: [String] = HorizonScheduleDefaults.orderedSlotIDs,
+        resolvedSlot: String,
+        secondsSinceLastChange: TimeInterval?,
+        minimumInterval: TimeInterval
+    ) -> Bool {
+        shouldPreservePersistedWallpaperAtLaunch(
+            hasPersistedWallpaper: hasPersistedWallpaper,
+            persistedWallpaperSlot: resolvedPersistedWallpaperSlot(
+                persistedLastAppliedSlot: persistedLastAppliedSlot,
+                latestHistorySlotID: latestHistorySlotID,
+                persistedIdentifier: persistedIdentifier,
+                knownSlotIDs: knownSlotIDs
+            ),
+            resolvedSlot: resolvedSlot,
+            secondsSinceLastChange: secondsSinceLastChange,
+            minimumInterval: minimumInterval
+        )
+    }
+
     /// Launch churn guard: a fresh launch has an empty in-memory lastSlot,
     /// which used to force a rotation on every login/restart. Keep the
     /// persisted wallpaper when it still fits: the dwell clock (persisted)
     /// hasn't expired and the wallpaper belongs to the current slot. A nil
     /// persistedWallpaperSlot means a user/custom wallpaper with no manifest
-    /// slot — those are slot-agnostic and preserved while the dwell is valid.
+    /// slot. Those are slot-agnostic and preserved while the dwell is valid.
     static func shouldPreservePersistedWallpaperAtLaunch(
         hasPersistedWallpaper: Bool,
         persistedWallpaperSlot: String?,

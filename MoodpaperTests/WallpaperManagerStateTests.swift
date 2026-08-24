@@ -654,6 +654,85 @@ final class WallpaperManagerStateTests: XCTestCase {
         )
     }
 
+    // Production checkAndUpdateWallpaper used to pass persistedWallpaperSlot:
+    // nil, which treated every in-dwell wallpaper as slot-agnostic and
+    // preserved a morning image after the clock moved to afternoon while
+    // quit. The real call path must resolve the last applied slot first.
+    func testLaunchPreserveCallPathRotatesWhenPersistedSlotMovedOnWhileQuit() {
+        XCTAssertFalse(
+            WallpaperManager.shouldPreservePersistedWallpaperAtLaunchFromState(
+                hasPersistedWallpaper: true,
+                persistedLastAppliedSlot: "morning",
+                latestHistorySlotID: "morning",
+                persistedIdentifier: "morning-5",
+                resolvedSlot: "afternoon",
+                secondsSinceLastChange: 600,
+                minimumInterval: 3 * 3600
+            )
+        )
+    }
+
+    func testLaunchPreserveCallPathUsesHistorySlotWhenLastAppliedSlotIsMissing() {
+        XCTAssertFalse(
+            WallpaperManager.shouldPreservePersistedWallpaperAtLaunchFromState(
+                hasPersistedWallpaper: true,
+                persistedLastAppliedSlot: nil,
+                latestHistorySlotID: "morning",
+                persistedIdentifier: "custom.jpg",
+                resolvedSlot: "afternoon",
+                secondsSinceLastChange: 600,
+                minimumInterval: 3 * 3600
+            )
+        )
+        XCTAssertTrue(
+            WallpaperManager.shouldPreservePersistedWallpaperAtLaunchFromState(
+                hasPersistedWallpaper: true,
+                persistedLastAppliedSlot: nil,
+                latestHistorySlotID: "afternoon",
+                persistedIdentifier: "custom.jpg",
+                resolvedSlot: "afternoon",
+                secondsSinceLastChange: 600,
+                minimumInterval: 3 * 3600
+            )
+        )
+    }
+
+    func testLaunchPreserveCallPathDerivesSlotFromIdentifierWhenHistoryIsMissing() {
+        XCTAssertEqual(
+            WallpaperManager.resolvedPersistedWallpaperSlot(
+                persistedLastAppliedSlot: nil,
+                latestHistorySlotID: nil,
+                persistedIdentifier: "morning-5",
+                knownSlotIDs: HorizonScheduleDefaults.orderedSlotIDs
+            ),
+            "morning"
+        )
+        XCTAssertEqual(
+            WallpaperManager.slotForWallpaperIdentifier(
+                "/Users/example/Library/Application Support/Moodpaper/Moods/work/Morning/lake.jpg",
+                knownSlotIDs: HorizonScheduleDefaults.orderedSlotIDs
+            ),
+            "morning"
+        )
+        XCTAssertNil(
+            WallpaperManager.slotForWallpaperIdentifier(
+                "/Users/example/Library/Application Support/Moodpaper/Moods/work/AllDay/custom.jpg",
+                knownSlotIDs: HorizonScheduleDefaults.orderedSlotIDs
+            )
+        )
+        XCTAssertFalse(
+            WallpaperManager.shouldPreservePersistedWallpaperAtLaunchFromState(
+                hasPersistedWallpaper: true,
+                persistedLastAppliedSlot: nil,
+                latestHistorySlotID: nil,
+                persistedIdentifier: "morning-5",
+                resolvedSlot: "afternoon",
+                secondsSinceLastChange: 600,
+                minimumInterval: 3 * 3600
+            )
+        )
+    }
+
     func testLaunchRotatesOnFirstRunOrUnknownState() {
         XCTAssertFalse(
             WallpaperManager.shouldPreservePersistedWallpaperAtLaunch(
