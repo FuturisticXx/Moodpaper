@@ -41,9 +41,6 @@ final class HorizonScheduleSettings: ObservableObject {
         TimeSlot(id: "evening",   title: "Night",     symbol: "sparkles",       swatch: (0.29, 0.29, 0.49)),
     ]
 
-    @Published var slotEnabled: [String: Bool] = [:] {
-        didSet { persistIfReady() }
-    }
     @Published var wallpapersPerDay: Double = 8 {
         didSet {
             AnalyticsManager.shared.log(.settingsChanged, metadata: ["setting": "wallpapers_per_day", "value": String(wallpapersPerDay)])
@@ -52,17 +49,34 @@ final class HorizonScheduleSettings: ObservableObject {
     }
 
     private var isBootstrapping = true
+    private var defaultsObserver: AnyCancellable?
 
     init() {
         loadFromDefaults()
         isBootstrapping = false
         persistIfReady()
+        // Slot enabled state is read straight from UserDefaults so this
+        // view and Shape My Day never hold competing copies of the map.
+        // Re-render when any writer touches defaults.
+        defaultsObserver = NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+
+    func isSlotEnabled(_ id: String) -> Bool {
+        HorizonScheduleDefaults.isSlotEnabled(id)
+    }
+
+    func setSlotEnabled(_ enabled: Bool, id: String) {
+        objectWillChange.send()
+        HorizonScheduleDefaults.setSlotEnabled(enabled, slotID: id)
     }
 
     func binding(for id: String) -> Binding<Bool> {
         Binding(
-            get: { self.slotEnabled[id] ?? true },
-            set: { self.slotEnabled[id] = $0 }
+            get: { self.isSlotEnabled(id) },
+            set: { self.setSlotEnabled($0, id: id) }
         )
     }
 
@@ -72,13 +86,6 @@ final class HorizonScheduleSettings: ObservableObject {
         let defaults = UserDefaults.standard
         let cappedValue = min(max(wallpapersPerDay, 1), 48)
         defaults.set(cappedValue, forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
-
-        do {
-            let data = try JSONEncoder().encode(slotEnabled)
-            defaults.set(data, forKey: HorizonScheduleDefaults.slotEnabledKey)
-        } catch {
-            print("[HorizonSettingsView] Failed to encode slotEnabled: \(error)")
-        }
     }
 
     private func loadFromDefaults() {
@@ -86,25 +93,6 @@ final class HorizonScheduleSettings: ObservableObject {
 
         let storedFrequency = defaults.double(forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
         wallpapersPerDay = storedFrequency == 0 ? 8 : min(max(storedFrequency, 1), 48)
-
-        var enabledMap = HorizonScheduleDefaults.orderedSlotIDs.reduce(into: [String: Bool]()) {
-            $0[$1] = true
-        }
-
-        if let data = defaults.data(forKey: HorizonScheduleDefaults.slotEnabledKey) {
-            do {
-                let decoded = try JSONDecoder().decode([String: Bool].self, from: data)
-                for slotID in HorizonScheduleDefaults.orderedSlotIDs {
-                    if let value = decoded[slotID] {
-                        enabledMap[slotID] = value
-                    }
-                }
-            } catch {
-                print("[HorizonSettingsView] Failed to decode slotEnabled: \(error)")
-            }
-        }
-
-        slotEnabled = enabledMap
     }
 }
 

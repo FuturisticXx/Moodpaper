@@ -26,6 +26,8 @@ struct ShapeMyDayView: View {
     }
 
     private func editor(for mood: Mood) -> some View {
+        // Header stays pinned so Done is always reachable; everything below
+        // scrolls, since All Periods expanded is taller than most displays.
         VStack(alignment: .leading, spacing: HorizonSpacing.md) {
             header(mood: mood)
             if let actionError {
@@ -34,21 +36,28 @@ struct ShapeMyDayView: View {
                     .foregroundColor(.orange)
                     .accessibilityLabel(actionError)
             }
-            vibePhotos(in: mood)
-            fourGroups(in: mood)
-                .id(skipRevision)
-            DisclosureGroup(isExpanded: $showingAllPeriods) {
-                allPeriods(in: mood)
-                    .id(skipRevision)
-            } label: {
-                Text("All Periods")
-                    .font(HorizonTypography.headline)
-                    .foregroundColor(HorizonColors.textPrimary)
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: HorizonSpacing.md) {
+                    vibePhotos(in: mood)
+                    fourGroups(in: mood)
+                        .id(skipRevision)
+                    DisclosureGroup(isExpanded: $showingAllPeriods) {
+                        allPeriods(in: mood)
+                            .id(skipRevision)
+                    } label: {
+                        Text("All Periods")
+                            .font(HorizonTypography.headline)
+                            .foregroundColor(HorizonColors.textPrimary)
+                    }
+                    .accessibilityHint("Shows every detailed time of day in this Vibe")
+                }
             }
-            .accessibilityHint("Shows every detailed time of day in this Vibe")
-            Spacer(minLength: 0)
         }
         .padding(HorizonSpacing.lg)
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            // Settings > Schedule writes the same slot map; keep skip state live.
+            skipRevision += 1
+        }
     }
 
     private func header(mood: Mood) -> some View {
@@ -93,6 +102,7 @@ struct ShapeMyDayView: View {
                                 isSelected: selectedURL == item.url
                             )
                             .onTapGesture { selectedURL = item.url }
+                            .accessibilityAction { selectedURL = item.url }
                             .draggable(item.url)
                             .contextMenu { wallpaperMenu(item.url, in: mood) }
                             .accessibilityAction(named: "Play throughout the day") {
@@ -248,6 +258,7 @@ struct ShapeMyDayView: View {
                         ForEach(assigned, id: \.path) { url in
                             ShapeMyDayThumbnail(url: url, isSelected: selectedURL == url, compact: true)
                                 .onTapGesture { selectedURL = url }
+                                .accessibilityAction { selectedURL = url }
                                 .contextMenu {
                                     Button("Remove from \(slot.displayName)") {
                                         perform { try store.removeWallpaperAssignment(url, from: slot, in: mood) }

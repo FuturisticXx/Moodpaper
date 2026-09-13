@@ -695,6 +695,24 @@ final class MoodStoreTests: XCTestCase {
         }
     }
 
+    func testPlayThroughoutTheDayFromSlotCopyReusesPoolEntryAndIsIdempotent() throws {
+        // The Wallpapers grid hands over the slot copy's URL, not the pool URL.
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("lake.jpg")
+        try writeTestImage(to: throughout)
+        try store.assignWallpaper(throughout, to: .morning, in: mood)
+        let slotCopy = try XCTUnwrap(store.wallpapers(for: .dawn, in: mood).first)
+
+        try store.playThroughoutTheDay(slotCopy, in: mood)
+        try store.playThroughoutTheDay(throughout, in: mood)
+
+        XCTAssertEqual(store.allDayWallpapers(in: mood).map(\.lastPathComponent), ["lake.jpg"])
+        for slot in TimeSlot.allCases {
+            XCTAssertTrue(store.wallpapers(for: slot, in: mood).isEmpty)
+        }
+    }
+
     func testSkipPeriodStateIsIndependentOfWallpaperAssignments() throws {
         let store = makeStore()
         let mood = try XCTUnwrap(store.create(name: "Calm"))

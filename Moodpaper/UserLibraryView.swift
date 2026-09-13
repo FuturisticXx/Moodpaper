@@ -338,7 +338,19 @@ struct UserLibraryView: View {
     }
 
     private func playThroughoutTheDay(_ items: [WallpaperLibraryItem]) {
-        assign(items, to: .throughoutTheDay)
+        // Time-of-day assignment copies a photo into slot folders and keeps the Vibe
+        // pool entry, so returning to general playback must reuse that entry
+        // instead of moving the slot copy in beside it.
+        guard let mood = store.activeMood else { return }
+        do {
+            for item in items {
+                try store.playThroughoutTheDay(item.url, in: mood)
+            }
+            selectedURLs.removeAll()
+            importStatus = nil
+        } catch {
+            importStatus = ImportStatus(updateFailure: error)
+        }
     }
 
     private func assign(_ items: [WallpaperLibraryItem], to placement: WallpaperPlacement) {
