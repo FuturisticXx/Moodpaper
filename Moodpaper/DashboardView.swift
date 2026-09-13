@@ -237,7 +237,7 @@ private struct GreetingHeader: View {
     }
 
     private var playbackSourceLine: String {
-        MoodStore.shared.activeMood.map { "From \($0.name)" } ?? "Using photos from this Vibe"
+        MoodStore.shared.activeMood.map { "From \($0.displayName)" } ?? "Using photos from this Vibe"
     }
 
     var body: some View {
@@ -605,7 +605,7 @@ private struct WeatherCard: View {
                     Spacer()
                     MetricChip(
                         label: "Vibe",
-                        value: moodStore.activeMood?.name ?? "None Yet",
+                        value: moodStore.activeMood?.displayName ?? "None Yet",
                         icon: "paintpalette.fill",
                         foregroundColor: chipForegroundColor
                     )
@@ -1018,7 +1018,7 @@ private struct MoodToggleCard: View {
                         .font(HorizonTypography.caption)
                         .foregroundColor(HorizonColors.textSecondary)
 
-                    Text(store.activeMood?.name ?? "No Vibe Yet")
+                    Text(store.activeMood?.displayName ?? "No Vibe Yet")
                         .font(HorizonTypography.title2)
                         .fontWeight(.semibold)
                         .foregroundColor(HorizonColors.textPrimary)
