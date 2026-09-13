@@ -76,19 +76,27 @@ final class HorizonNavigationTests: XCTestCase {
         XCTAssertTrue(source.contains("Back to Settings"))
     }
 
-    func testNowSurfaceUsesHeroWhyLineAndRecentWithoutLegacyDashboardChrome() throws {
+    func testDashboardPreservesOriginalCompositionWithPlaybackActions() throws {
         let source = try contents("Moodpaper/DashboardView.swift")
 
-        XCTAssertTrue(source.contains("NowStatusRow("))
+        XCTAssertTrue(source.contains("WeatherCard("))
         XCTAssertTrue(source.contains("CurrentWallpaperCard("))
+        XCTAssertTrue(source.contains("TimelineVisualization("))
+        XCTAssertTrue(source.contains("TodayPreviewSection("))
+        XCTAssertTrue(source.contains("Text(\"Today's Timeline\")"))
         XCTAssertTrue(source.contains("RecentHistorySection("))
+        XCTAssertTrue(source.contains("MoodToggleCard()"))
+        XCTAssertTrue(source.contains("let cardHeight: CGFloat = 260"))
         XCTAssertTrue(source.contains("Playing throughout the day"))
         XCTAssertTrue(source.contains("Keeping this wallpaper"))
         XCTAssertTrue(source.contains("Moodpaper is paused"))
-        XCTAssertFalse(source.contains("TodayPreviewSection("))
-        XCTAssertFalse(source.contains("WeatherCard("))
+        XCTAssertTrue(source.contains("Keep This Wallpaper"))
+        XCTAssertTrue(source.contains("heroActionLabel(title: \"Resume\")"))
+        XCTAssertTrue(source.contains("Text(\"Next\")"))
+        XCTAssertFalse(source.contains("NowStatusRow("))
         XCTAssertFalse(source.contains("Unpin Wallpaper"))
         XCTAssertFalse(source.contains("Skip to next wallpaper"))
+        XCTAssertFalse(source.contains(".frame(height: 360)"))
     }
 
     private func contents(_ relativePath: String) throws -> String {
