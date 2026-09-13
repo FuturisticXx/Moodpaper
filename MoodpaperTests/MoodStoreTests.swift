@@ -95,14 +95,21 @@ final class MoodStoreTests: XCTestCase {
     }
 
     func testNewVibesInheritSettingsDefaultCadenceNotSiblingCadence() throws {
+        // Set the Settings default before creating the store
         defaults.set(12.0, forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
         let store = makeStore()
         let first = try XCTUnwrap(store.create(name: "Calm"))
-        XCTAssertEqual(first.wallpapersPerDay, 12)
+        // The new Vibe should inherit the Settings default (12)
+        XCTAssertEqual(first.wallpapersPerDay, 12, "First Vibe should inherit Settings default of 12")
+        // Change the first Vibe's cadence
         store.setWallpapersPerDay(4, for: first)
+        // Fetch the updated first mood from the store since Mood is a value type
+        let updatedFirst = try XCTUnwrap(store.mood(id: first.id))
+        // Create a second Vibe - it should still inherit the Settings default (12), not the sibling's value (4)
         let second = try XCTUnwrap(store.create(name: "Bright"))
-        XCTAssertEqual(store.effectiveWallpapersPerDay(for: first), 4)
-        XCTAssertEqual(second.wallpapersPerDay, 12)
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: updatedFirst), 4, "First Vibe effective cadence should be 4")
+        XCTAssertEqual(second.wallpapersPerDay, 12, "Second Vibe should inherit Settings default of 12, not sibling's 4")
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: second), 12, "Second Vibe effective cadence should be 12")
     }
 
     func testLegacyMoodsWithoutCadenceCopyTheCurrentGlobalSetting() throws {
@@ -144,8 +151,13 @@ final class MoodStoreTests: XCTestCase {
         let store = makeStore()
         let mood = try XCTUnwrap(store.create(name: "Original"))
         store.setWallpapersPerDay(6, for: mood)
-        let copy = try XCTUnwrap(store.duplicate(mood))
-        XCTAssertEqual(store.effectiveWallpapersPerDay(for: copy), 6)
+        // Fetch the updated mood from the store since Mood is a value type
+        let updatedMood = try XCTUnwrap(store.mood(id: mood.id))
+        XCTAssertEqual(updatedMood.wallpapersPerDay, 6, "Source mood should have cadence 6")
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: updatedMood), 6, "Source effective cadence should be 6")
+        let copy = try XCTUnwrap(store.duplicate(updatedMood))
+        XCTAssertEqual(copy.wallpapersPerDay, 6, "Copy should have source's cadence 6")
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: copy), 6, "Copy effective cadence should be 6")
     }
 
     // MARK: Rename

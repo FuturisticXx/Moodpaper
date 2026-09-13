@@ -341,7 +341,9 @@ final class MoodStore: ObservableObject {
             delete(copy)
             return nil
         }
-        return copy
+        // `copy` is the snapshot `create` handed back, taken before the
+        // cadence was stored. Return the persisted entry so callers see it.
+        return moods.first { $0.id == copy.id } ?? copy
     }
 
     /// Delete a mood and its files. The active mood falls back to the first
