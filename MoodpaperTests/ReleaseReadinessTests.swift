@@ -147,15 +147,23 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(collageSource.contains(".clipped()"))
     }
 
-    func testLibrarySurfacesAllDayPoolBeforeTimeSlots() throws {
+    func testLibraryPresentsAUnifiedWallpaperGridWithoutAllDayMode() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
             encoding: .utf8
         )
 
-        XCTAssertTrue(source.contains("Text(\"All Day\")"))
-        XCTAssertTrue(source.contains("store.allDayWallpapers(in: mood)"))
-        XCTAssertTrue(source.contains("Using All Day"))
+        XCTAssertTrue(source.contains("store.libraryItems(in: mood)"))
+        XCTAssertTrue(source.contains("Play Throughout the Day"))
+        XCTAssertTrue(source.contains("Use During"))
+        XCTAssertTrue(source.contains("Use Now"))
+        XCTAssertTrue(source.contains("Preview"))
+        XCTAssertTrue(source.contains("importAllDayWallpapers"))
+        XCTAssertFalse(source.contains("Text(\"All Day\")"))
+        XCTAssertFalse(source.contains("Using All Day"))
+        XCTAssertFalse(source.contains("onApply"))
+        XCTAssertFalse(source.contains("Set as Wallpaper"))
+        XCTAssertFalse(source.contains("activatePrimaryAction"))
     }
 
     func testViewsDoNotCallApplyMoodChangeDirectly() throws {

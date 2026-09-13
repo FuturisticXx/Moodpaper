@@ -76,7 +76,7 @@ final class HorizonNavigationTests: XCTestCase {
         XCTAssertTrue(source.contains("Back to Settings"))
     }
 
-    func testDashboardPreservesOriginalCompositionWithPlaybackActions() throws {
+    func testDashboardCompositionRemainsTheApprovedNowSurface() throws {
         let source = try contents("Moodpaper/DashboardView.swift")
 
         XCTAssertTrue(source.contains("WeatherCard("))
@@ -97,6 +97,16 @@ final class HorizonNavigationTests: XCTestCase {
         XCTAssertFalse(source.contains("Unpin Wallpaper"))
         XCTAssertFalse(source.contains("Skip to next wallpaper"))
         XCTAssertFalse(source.contains(".frame(height: 360)"))
+    }
+
+    func testWallpapersGridExposesPreviewUseNowAndPlacementWithoutAllDayCopy() throws {
+        let source = try contents("Moodpaper/UserLibraryView.swift")
+        XCTAssertTrue(source.contains("Play Throughout the Day"))
+        XCTAssertTrue(source.contains("Use During"))
+        XCTAssertTrue(source.contains("Use Now"))
+        XCTAssertTrue(source.contains("Preview"))
+        XCTAssertFalse(source.contains("Text(\"All Day\")"))
+        XCTAssertFalse(source.contains("Set as Wallpaper"))
     }
 
     private func contents(_ relativePath: String) throws -> String {

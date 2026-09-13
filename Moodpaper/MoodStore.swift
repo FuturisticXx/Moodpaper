@@ -26,6 +26,28 @@ struct WallpaperImportSummary: Equatable, Sendable {
     let failedCount: Int
 }
 
+/// Where a wallpaper lives inside a Vibe. The AllDay folder remains the
+/// internal fallback pool; user-facing copy says "throughout the day."
+enum WallpaperPlacement: Equatable, Hashable {
+    case throughoutTheDay
+    case during(TimeSlot)
+
+    var badgeTitle: String {
+        switch self {
+        case .throughoutTheDay:
+            return "Throughout the day"
+        case .during(let slot):
+            return slot.displayName
+        }
+    }
+}
+
+struct WallpaperLibraryItem: Identifiable, Hashable {
+    let url: URL
+    let placement: WallpaperPlacement
+    var id: URL { url }
+}
+
 // MARK: - Mood Store
 
 // Owns the Mood catalog and its files.
@@ -332,6 +354,52 @@ final class MoodStore: ObservableObject {
 
     func removeWallpaper(_ url: URL, from mood: Mood) throws {
         try fileManager.removeItem(at: url)
+        touch(mood)
+        objectWillChange.send()
+    }
+
+    /// Every wallpaper in the Vibe, including the shared fallback pool and
+    /// slot-specific files. The engine still resolves empty slots through
+    /// `effectiveWallpapers`; this list is for the unified Wallpapers grid.
+    func libraryItems(in mood: Mood) -> [WallpaperLibraryItem] {
+        var items: [WallpaperLibraryItem] = allDayWallpapers(in: mood).map {
+            WallpaperLibraryItem(url: $0, placement: .throughoutTheDay)
+        }
+        for slot in TimeSlot.allCases {
+            items.append(contentsOf: wallpapers(for: slot, in: mood).map {
+                WallpaperLibraryItem(url: $0, placement: .during(slot))
+            })
+        }
+        return items.sorted {
+            $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
+        }
+    }
+
+    /// Moves a wallpaper between the shared fallback pool and a time-slot
+    /// folder. Slot-specific files still override the fallback internally.
+    func setWallpaperPlacement(
+        _ placement: WallpaperPlacement,
+        for url: URL,
+        in mood: Mood
+    ) throws {
+        let destinationFolder: URL
+        switch placement {
+        case .throughoutTheDay:
+            destinationFolder = allDayFolderURL(in: mood)
+        case .during(let slot):
+            destinationFolder = folderURL(for: slot, in: mood)
+        }
+
+        let currentFolder = url.deletingLastPathComponent().standardizedFileURL
+        if currentFolder == destinationFolder.standardizedFileURL {
+            return
+        }
+
+        var destination = destinationFolder.appendingPathComponent(url.lastPathComponent)
+        if fileManager.fileExists(atPath: destination.path) {
+            destination = Self.importDestination(for: url, in: destinationFolder)
+        }
+        try fileManager.moveItem(at: url, to: destination)
         touch(mood)
         objectWillChange.send()
     }

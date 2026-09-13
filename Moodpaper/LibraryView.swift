@@ -1,9 +1,8 @@
 import SwiftUI
 import AppKit
 
-// The bundled wallpaper library is gone (Moodpaper pivot). The Library is now
-// the user's own wallpapers: per-slot import, assignment, and management all
-// live in UserLibraryView; this shell adds the Library header and search.
+// Wallpapers is one grid of the active Vibe's photos. Import, preview,
+// Use Now, Play Throughout the Day, and Use During… live in UserLibraryView.
 struct LibraryView: View {
     @EnvironmentObject private var wallpaperManager: WallpaperManager
     @State private var searchText = ""
@@ -17,7 +16,7 @@ struct LibraryView: View {
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(HorizonColors.primaryAccent.gradient)
                         .accessibilityHidden(true)
-                    Text("Library")
+                    Text("Wallpapers")
                         .font(HorizonTypography.title2)
                         .foregroundColor(HorizonColors.textPrimary)
                         .lineLimit(1)
@@ -33,7 +32,7 @@ struct LibraryView: View {
                         .foregroundStyle(HorizonColors.textSecondary)
                         .font(HorizonTypography.body)
                         .accessibilityHidden(true)
-                    TextField("Search time slots...", text: $searchText)
+                    TextField("Search wallpapers...", text: $searchText)
                         .textFieldStyle(.plain)
                         .font(HorizonTypography.body)
                 }
@@ -55,6 +54,7 @@ struct LibraryView: View {
             .padding(.bottom, HorizonSpacing.md)
 
             UserLibraryView(searchText: searchText)
+                .environmentObject(wallpaperManager)
         }
         .background(.clear)
         .onAppear {

@@ -4,8 +4,8 @@ import SwiftUI
 
 // The Moodpaper switcher: every Vibe is a named set of wallpaper
 // assignments, and this grid is where the user creates, renames, duplicates,
-// deletes, and activates them. All Day provides the simple shared pool, while
-// the Library offers optional per-slot overrides.
+// deletes, and activates them. Shared wallpapers play throughout the day;
+// Wallpapers can assign any photo to a time of day.
 struct MoodsView: View {
     @ObservedObject private var store = MoodStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -84,7 +84,7 @@ struct MoodsView: View {
                     }
                 }
 
-                Text("All Day wallpapers make setup simple. Add time-slot favorites from the Library whenever you want.")
+                Text("Add wallpapers that play throughout the day. Assign any photo to a time of day from Wallpapers.")
                     .font(HorizonTypography.caption)
                     .foregroundColor(HorizonColors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
