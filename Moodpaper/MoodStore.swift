@@ -18,6 +18,18 @@ struct Mood: Codable, Identifiable, Equatable {
     var name: String
     let createdAt: Date
     var updatedAt: Date
+    /// Copies per day while this Vibe is active. Nil only on catalogs written
+    /// before Phase 4; `MoodStore` fills it from the then-current global
+    /// cadence on first load.
+    var wallpapersPerDay: Double?
+
+    var isUnnamed: Bool {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var displayName: String {
+        isUnnamed ? "My Wallpapers" : name
+    }
 }
 
 struct WallpaperImportSummary: Equatable, Sendable {
@@ -95,6 +107,7 @@ final class MoodStore: ObservableObject {
             .appendingPathComponent("Moodpaper")
         self.moodsRootURL = base.appendingPathComponent("Moods")
         load()
+        migrateVibeCadencesIfNeeded()
         restoreActiveMoodIfNeeded()
     }
 
@@ -117,6 +130,7 @@ final class MoodStore: ObservableObject {
     /// Re-read the catalog after files changed underneath the store.
     func reload() {
         load()
+        migrateVibeCadencesIfNeeded()
         restoreActiveMoodIfNeeded()
     }
 
@@ -211,16 +225,17 @@ final class MoodStore: ObservableObject {
 
     // MARK: - CRUD
 
-    /// Create a new mood. Returns nil when the trimmed name is empty.
+    /// Create a Vibe. An empty name is allowed: playback does not require
+    /// naming a style first. New Vibes inherit the Settings default cadence.
     @discardableResult
     func create(name: String) -> Mood? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
         let mood = Mood(
             id: UUID().uuidString.lowercased(),
             name: trimmed,
             createdAt: Date(),
-            updatedAt: Date()
+            updatedAt: Date(),
+            wallpapersPerDay: defaultWallpapersPerDayForNewVibes
         )
         moods.append(mood)
         try? fileManager.createDirectory(
@@ -235,13 +250,68 @@ final class MoodStore: ObservableObject {
         return mood
     }
 
+    /// A playable Vibe so wallpapers can be added without a naming step.
+    /// Reuses the active Vibe, otherwise the first catalog entry, otherwise
+    /// creates an unnamed default.
+    @discardableResult
+    func ensurePlayableVibe() -> Mood {
+        if let activeMood {
+            return activeMood
+        }
+        if let first = moods.first {
+            activate(first)
+            return first
+        }
+        return create(name: "")!
+    }
+
     func rename(_ mood: Mood, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let idx = moods.firstIndex(where: { $0.id == mood.id }) else { return }
+        guard let idx = moods.firstIndex(where: { $0.id == mood.id }) else { return }
         guard moods[idx].name != trimmed else { return }
         moods[idx].name = trimmed
         moods[idx].updatedAt = Date()
         save()
+    }
+
+    func effectiveWallpapersPerDay(for mood: Mood?) -> Double {
+        if let stored = mood?.wallpapersPerDay {
+            return HorizonScheduleDefaults.resolvedWallpapersPerDay(stored)
+        }
+        return defaultWallpapersPerDayForNewVibes
+    }
+
+    func setWallpapersPerDay(_ value: Double, for mood: Mood) {
+        guard let idx = moods.firstIndex(where: { $0.id == mood.id }) else { return }
+        let capped = min(max(value, 1), 48)
+        guard moods[idx].wallpapersPerDay != capped else { return }
+        moods[idx].wallpapersPerDay = capped
+        moods[idx].updatedAt = Date()
+        save()
+        objectWillChange.send()
+        if mood.id == activeMoodID {
+            WallpaperManager.shared.updateNextChangeCountdown()
+        }
+    }
+
+    var defaultWallpapersPerDayForNewVibes: Double {
+        HorizonScheduleDefaults.resolvedWallpapersPerDay(
+            defaults.double(forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
+        )
+    }
+
+    /// Existing Vibes without a stored cadence copy the current global value
+    /// so the user's effective frequency does not jump to a silent 8.
+    func migrateVibeCadencesIfNeeded() {
+        let fallback = defaultWallpapersPerDayForNewVibes
+        var changed = false
+        for index in moods.indices where moods[index].wallpapersPerDay == nil {
+            moods[index].wallpapersPerDay = fallback
+            changed = true
+        }
+        if changed {
+            save()
+        }
     }
 
     /// Duplicate a mood including every slot's images. Returns nil when the
@@ -249,7 +319,9 @@ final class MoodStore: ObservableObject {
     @discardableResult
     func duplicate(_ mood: Mood) -> Mood? {
         guard moods.contains(where: { $0.id == mood.id }) else { return nil }
-        guard let copy = create(name: "\(mood.name) Copy") else { return nil }
+        let copyName = mood.isUnnamed ? "" : "\(mood.name) Copy"
+        guard let copy = create(name: copyName) else { return nil }
+        setWallpapersPerDay(effectiveWallpapersPerDay(for: mood), for: copy)
         let sourceRoot = moodsRootURL.appendingPathComponent(mood.id)
         let destinationRoot = moodsRootURL.appendingPathComponent(copy.id)
         do {

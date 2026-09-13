@@ -98,16 +98,23 @@ nonisolated fileprivate struct WallpaperScreenApplyResult: Sendable {
 }
 
 extension WallpaperManager {
-    /// Returns the dwell interval the rotation engine should use right now,
-    /// derived from the global wallpapersPerDay setting. Pure function — no
-    /// state reads — so tests can lock the contract without touching
-    /// singletons. Use `currentDwellInterval` from runtime code; this is
-    /// the testable seam.
+    /// Pure dwell math from a wallpapers-per-day count. Tests lock this
+    /// without touching singletons. Runtime uses `currentDwellInterval`.
     static func dwellSeconds(
         globalWallpapersPerDay: Int
     ) -> TimeInterval {
         let safe = max(globalWallpapersPerDay, 1)
         return TimeInterval(86400 / safe)
+    }
+
+    /// Playback cadence uses the active Vibe when it has a stored How Often.
+    /// With no active Vibe, the Settings default (legacy global key) applies.
+    static func wallpapersPerDayForPlayback(
+        activeVibeWallpapersPerDay: Double?,
+        globalStoredWallpapersPerDay: Double
+    ) -> Int {
+        let stored = activeVibeWallpapersPerDay ?? globalStoredWallpapersPerDay
+        return Int(HorizonScheduleDefaults.resolvedWallpapersPerDay(stored))
     }
 
     /// Decides whether the system-reported desktop state has caught up with
@@ -152,7 +159,7 @@ class WallpaperManager: ObservableObject {
     /// all use the same source-of-truth math.
     var currentDwellInterval: TimeInterval {
         Self.dwellSeconds(
-            globalWallpapersPerDay: wallpapersPerDayFromDefaults()
+            globalWallpapersPerDay: wallpapersPerDayForPlayback()
         )
     }
 
@@ -778,8 +785,8 @@ class WallpaperManager: ObservableObject {
         let needsInitialSet = lastSlot.isEmpty
 
         // Dwell interval is needed both by the launch-preservation check and
-        // the rotation gate below; compute it once. Derives from the global
-        // wallpapersPerDay setting. See dwellSeconds().
+        // the rotation gate below; compute it once. Derives from the active
+        // Vibe's How Often (falling back to the Settings default). See dwellSeconds().
         let minimumInterval = currentDwellInterval
 
         // Launch preservation: lastSlot is in-memory only, so every launch
@@ -855,14 +862,13 @@ class WallpaperManager: ObservableObject {
         return lastWallpaperChangeAt.addingTimeInterval(currentDwellInterval)
     }
 
-    private func wallpapersPerDayFromDefaults() -> Int {
-        let defaults = UserDefaults.standard
-        let stored = defaults.double(forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
-        if stored == 0 {
-            return 8
-        }
-
-        return Int(min(max(stored, 1), 48))
+    private func wallpapersPerDayForPlayback() -> Int {
+        Self.wallpapersPerDayForPlayback(
+            activeVibeWallpapersPerDay: MoodStore.shared.activeMood?.wallpapersPerDay,
+            globalStoredWallpapersPerDay: UserDefaults.standard.double(
+                forKey: HorizonScheduleDefaults.wallpapersPerDayKey
+            )
+        )
     }
 
     func skipToPrevious() {
@@ -978,6 +984,7 @@ class WallpaperManager: ObservableObject {
         }
         lastSlot = resolvedSlot
         lastWallpaperChangeAt = Date()
+        updateNextChangeCountdown()
     }
 
     /// Diagnostics: clears lastSlot so the next checkAndUpdateWallpaper() call

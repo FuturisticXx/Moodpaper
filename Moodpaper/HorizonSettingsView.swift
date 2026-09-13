@@ -515,7 +515,7 @@ struct ScheduleSettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Schedule", systemImage: "calendar.day.timeline.left")
                         .font(.system(size: 22, weight: .semibold))
-                    Text("Enable Time Slots and Control How Often Wallpapers Change.")
+                    Text("Default How Often for new Vibes. Each Vibe can use a different cadence.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -532,7 +532,7 @@ struct ScheduleSettingsView: View {
 
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Label("Wallpapers per day", systemImage: "square.stack.3d.up.fill")
+                        Label("Default wallpapers per day", systemImage: "square.stack.3d.up.fill")
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
                         Text("\(Int(scheduleSettings.wallpapersPerDay))")

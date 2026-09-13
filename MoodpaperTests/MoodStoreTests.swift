@@ -78,10 +78,74 @@ final class MoodStoreTests: XCTestCase {
         XCTAssertEqual(store.activeMood?.name, "Optimistic")
     }
 
-    func testCreateRejectsEmptyName() {
+    func testCreateAllowsUnnamedVibe() throws {
         let store = makeStore()
-        XCTAssertNil(store.create(name: "   "))
-        XCTAssertTrue(store.moods.isEmpty)
+        let vibe = try XCTUnwrap(store.create(name: "   "))
+        XCTAssertTrue(vibe.isUnnamed)
+        XCTAssertEqual(vibe.displayName, "My Wallpapers")
+        XCTAssertEqual(store.activeMoodID, vibe.id)
+    }
+
+    func testEnsurePlayableVibeCreatesUnnamedDefaultWhenCatalogIsEmpty() {
+        let store = makeStore()
+        let vibe = store.ensurePlayableVibe()
+        XCTAssertTrue(vibe.isUnnamed)
+        XCTAssertEqual(store.moods.count, 1)
+        XCTAssertEqual(store.activeMoodID, vibe.id)
+    }
+
+    func testNewVibesInheritSettingsDefaultCadenceNotSiblingCadence() throws {
+        defaults.set(12.0, forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
+        let store = makeStore()
+        let first = try XCTUnwrap(store.create(name: "Calm"))
+        XCTAssertEqual(first.wallpapersPerDay, 12)
+        store.setWallpapersPerDay(4, for: first)
+        let second = try XCTUnwrap(store.create(name: "Bright"))
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: first), 4)
+        XCTAssertEqual(second.wallpapersPerDay, 12)
+    }
+
+    func testLegacyMoodsWithoutCadenceCopyTheCurrentGlobalSetting() throws {
+        defaults.set(15.0, forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
+        let original = makeStore()
+        let mood = try XCTUnwrap(original.create(name: "Legacy"))
+        let metadata = baseURL.appendingPathComponent("Moods").appendingPathComponent("moods.json")
+        let data = try Data(contentsOf: metadata)
+        var catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        catalog = catalog.map { entry in
+            var copy = entry
+            copy.removeValue(forKey: "wallpapersPerDay")
+            return copy
+        }
+        try JSONSerialization.data(withJSONObject: catalog).write(to: metadata)
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.mood(id: mood.id)?.wallpapersPerDay, 15)
+    }
+
+    func testLegacyMoodsWithoutCadenceUseEightWhenGlobalWasNeverSet() throws {
+        let original = makeStore()
+        let mood = try XCTUnwrap(original.create(name: "Legacy"))
+        let metadata = baseURL.appendingPathComponent("Moods").appendingPathComponent("moods.json")
+        let data = try Data(contentsOf: metadata)
+        var catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        catalog = catalog.map { entry in
+            var copy = entry
+            copy.removeValue(forKey: "wallpapersPerDay")
+            return copy
+        }
+        try JSONSerialization.data(withJSONObject: catalog).write(to: metadata)
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.mood(id: mood.id)?.wallpapersPerDay, 8)
+    }
+
+    func testDuplicateCopiesCadence() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Original"))
+        store.setWallpapersPerDay(6, for: mood)
+        let copy = try XCTUnwrap(store.duplicate(mood))
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: copy), 6)
     }
 
     // MARK: Rename

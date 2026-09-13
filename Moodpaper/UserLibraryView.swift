@@ -62,6 +62,9 @@ struct UserLibraryView: View {
             content
         }
         .background(.clear)
+        .onAppear {
+            _ = store.ensurePlayableVibe()
+        }
         .onChange(of: store.activeMoodID) { _, _ in
             selectedURLs.removeAll()
             previewItem = nil
@@ -106,7 +109,7 @@ struct UserLibraryView: View {
                 Image(systemName: "paintpalette.fill")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(HorizonColors.secondaryAccent.gradient)
-                Text(store.activeMood.map { "Editing \"\($0.name)\"" } ?? "Your Wallpapers")
+                Text("Editing \"\(store.activeMood?.displayName ?? "My Wallpapers")\"")
                     .font(HorizonTypography.title2)
                     .foregroundColor(HorizonColors.textPrimary)
             }
@@ -167,40 +170,11 @@ struct UserLibraryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if store.activeMood == nil {
-            emptyVibePrompt
-        } else if let mood = store.activeMood, isActiveMoodEmpty {
-            emptyDropCanvas(moodName: mood.name)
-        } else {
+        if let mood = store.activeMood, isActiveMoodEmpty {
+            emptyDropCanvas(moodName: mood.displayName)
+        } else if store.activeMood != nil {
             grid
         }
-    }
-
-    private var emptyVibePrompt: some View {
-        VStack(spacing: HorizonSpacing.md) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundStyle(HorizonColors.secondaryAccent.gradient)
-                .accessibilityHidden(true)
-            Text("Your wallpapers need a Vibe")
-                .font(HorizonTypography.title2)
-                .foregroundColor(HorizonColors.textPrimary)
-            Text("Give your desktop a feeling first. Then add a folder or choose photos one by one.")
-                .font(HorizonTypography.callout)
-                .foregroundColor(HorizonColors.textSecondary)
-                .multilineTextAlignment(.center)
-            Button {
-                NotificationCenter.default.post(name: .navigateToMoods, object: nil)
-            } label: {
-                Label("Create Your First Vibe", systemImage: "plus")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(HorizonColors.secondaryAccent)
-        }
-        .frame(maxWidth: .infinity, minHeight: 260)
-        .horizonGlassCard(style: .standard, padding: HorizonSpacing.xl)
-        .padding(.horizontal, HorizonSpacing.xxxl)
-        .padding(.bottom, HorizonSpacing.xxxl)
     }
 
     private func emptyDropCanvas(moodName: String) -> some View {

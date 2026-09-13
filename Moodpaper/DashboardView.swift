@@ -9,12 +9,11 @@ struct DashboardView: View {
     @StateObject private var weatherService = HorizonWeatherService.shared
     @StateObject private var locationService = LocationService.shared
     @StateObject private var userWallpaperManager = UserWallpaperManager.shared
+    @ObservedObject private var moodStore = MoodStore.shared
     @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation = false
 
-    // Get actual frequency from UserDefaults (matches ScheduleSettingsView)
     private var wallpapersPerDay: Int {
-        let stored = UserDefaults.standard.double(forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
-        return stored == 0 ? 8 : Int(stored)
+        Int(moodStore.effectiveWallpapersPerDay(for: moodStore.activeMood))
     }
 
     // Get actual wallpapers shown today from history

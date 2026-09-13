@@ -39,8 +39,11 @@ final class HorizonNavigationTests: XCTestCase {
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(library.contains("navigateToMoods"))
-        XCTAssertTrue(library.contains("Create Your First Vibe"))
+        XCTAssertTrue(library.contains("ensurePlayableVibe"))
+
+        let moods = try contents("Moodpaper/MoodsView.swift")
+        XCTAssertTrue(moods.contains("Create Your First Vibe"))
+        XCTAssertTrue(moods.contains("navigateToUserWallpapers"))
 
         let root = try contents("Moodpaper/HorizonSettingsView.swift")
         XCTAssertTrue(root.contains("selectedSection = .moods"))
@@ -79,6 +82,7 @@ final class HorizonNavigationTests: XCTestCase {
     func testDashboardCompositionRemainsTheApprovedNowSurface() throws {
         let source = try contents("Moodpaper/DashboardView.swift")
 
+        XCTAssertTrue(source.contains("effectiveWallpapersPerDay"))
         XCTAssertTrue(source.contains("WeatherCard("))
         XCTAssertTrue(source.contains("CurrentWallpaperCard("))
         XCTAssertTrue(source.contains("TimelineVisualization("))

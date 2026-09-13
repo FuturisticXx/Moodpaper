@@ -3,6 +3,7 @@ import Foundation
 enum HorizonScheduleDefaults {
     static let slotEnabledKey = "schedule.slotEnabled"
     static let wallpapersPerDayKey = "schedule.wallpapersPerDay"
+    static let defaultWallpapersPerDay: Double = 8
     static let moodPresetEnabledKey = "mood.presetEnabled"
     static let timeSlotModeKey = "schedule.timeSlotMode"
     static let pauseRotationKey = "schedule.pauseRotation"
@@ -134,5 +135,12 @@ enum HorizonScheduleDefaults {
         }
 
         return fallbackSlots.first ?? "morning"
+    }
+
+    /// Resolves a stored wallpapers-per-day value. `0` means the key was
+    /// never written, which is the product default of 8 — not a user choice
+    /// of zero.
+    static func resolvedWallpapersPerDay(_ stored: Double) -> Double {
+        stored == 0 ? defaultWallpapersPerDay : min(max(stored, 1), 48)
     }
 }

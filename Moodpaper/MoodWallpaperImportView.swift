@@ -40,7 +40,7 @@ struct MoodWallpaperImportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: HorizonSpacing.lg) {
             VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
-                Text(mode == .creation ? "Bring \(mood.name) to Life" : "Add Wallpapers to \(mood.name)")
+                Text(mode == .creation ? "Bring \(mood.displayName) to Life" : "Add Wallpapers to \(mood.displayName)")
                     .font(HorizonTypography.title2)
                     .foregroundColor(HorizonColors.textPrimary)
                 Text("Drop a folder or a few photos. They play throughout the day, and you can assign any of them to a time of day later.")
