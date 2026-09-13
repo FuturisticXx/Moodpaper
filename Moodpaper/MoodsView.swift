@@ -238,6 +238,7 @@ struct MoodCard: View {
 
     @ObservedObject private var store = MoodStore.shared
     @State private var isHovered = false
+    @State private var showingShapeMyDay = false
 
     private var wallpaperCount: Int { store.totalWallpaperCount(in: mood) }
 
@@ -318,7 +319,16 @@ struct MoodCard: View {
 
             VibeHowOftenControl(mood: mood)
                 .padding(.horizontal, HorizonSpacing.lg)
-                .padding(.bottom, HorizonSpacing.md)
+            Button("Shape My Day") {
+                showingShapeMyDay = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .padding(.horizontal, HorizonSpacing.lg)
+            .padding(.bottom, HorizonSpacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("shape-my-day")
+            .accessibilityHint("Optional. Opens time-of-day wallpaper control. Not required to use this Vibe.")
         }
         .background(
             RoundedRectangle(cornerRadius: HorizonRadius.lg, style: .continuous)
@@ -334,6 +344,9 @@ struct MoodCard: View {
                         lineWidth: isActive ? 1.5 : 1)
         )
         .onHover { isHovered = $0 }
+        .sheet(isPresented: $showingShapeMyDay) {
+            ShapeMyDayView(moodID: mood.id)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(mood.displayName), \(isActive ? "active" : "inactive"), \(wallpaperCount == 0 ? "add wallpapers" : "\(wallpaperCount) wallpapers")")
     }
@@ -383,6 +396,7 @@ struct MoodEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name: String = ""
     @State private var showingDeleteConfirm = false
+    @State private var showingShapeMyDay = false
     @State private var createdMood: Mood?
 
     private var editingMood: Mood? {
@@ -408,6 +422,11 @@ struct MoodEditorSheet: View {
         .onAppear {
             if let mood = editingMood {
                 name = mood.name
+            }
+        }
+        .sheet(isPresented: $showingShapeMyDay) {
+            if let mood = editingMood {
+                ShapeMyDayView(moodID: mood.id)
             }
         }
         .alert("Delete this Vibe?", isPresented: $showingDeleteConfirm) {
@@ -453,6 +472,18 @@ struct MoodEditorSheet: View {
 
             if let mood = editingMood {
                 VibeHowOftenControl(mood: mood)
+                VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
+                    Button("Shape My Day") {
+                        showingShapeMyDay = true
+                    }
+                    .buttonStyle(.bordered)
+                    Text("Optional. Keep playing throughout the day, or assign photos to specific times.")
+                        .font(HorizonTypography.caption)
+                        .foregroundColor(HorizonColors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("Opens time-of-day wallpaper control. Not required to use this Vibe.")
                 HStack(spacing: HorizonSpacing.sm) {
                     Button("Duplicate") {
                         store.duplicate(mood)
@@ -484,6 +515,6 @@ struct MoodEditorSheet: View {
             }
         }
         .padding(HorizonSpacing.xl)
-        .frame(width: 420, height: isCreate ? 320 : 260)
+        .frame(width: 420, height: isCreate ? 320 : 360)
     }
 }

@@ -478,6 +478,110 @@ final class MoodStore: ObservableObject {
         objectWillChange.send()
     }
 
+    func dayPartRepresentation(for group: DayPartGroup, in mood: Mood) -> DayPartGroupRepresentation {
+        let filenameSets = group.slots.map { slot in
+            Set(wallpapers(for: slot, in: mood).map(\.lastPathComponent))
+        }
+        if filenameSets.allSatisfy(\.isEmpty) {
+            return .usingVibePhotos
+        }
+        let first = filenameSets[0]
+        if filenameSets.allSatisfy({ $0 == first }) {
+            return .assigned(filenames: first.sorted())
+        }
+        return .mixed
+    }
+
+    /// Copies a wallpaper into every detailed period in the group. The source
+    /// file stays where it is so Vibe-wide playback is preserved.
+    func assignWallpaper(_ url: URL, to group: DayPartGroup, in mood: Mood) throws {
+        for slot in group.slots {
+            try addWallpaperAssignment(url, to: slot, in: mood)
+        }
+    }
+
+    func unassignWallpaper(_ url: URL, from group: DayPartGroup, in mood: Mood) throws {
+        for slot in group.slots {
+            if let assigned = wallpaper(named: url.lastPathComponent, for: slot, in: mood) {
+                try removeWallpaperAssignment(assigned, from: slot, in: mood)
+            }
+        }
+    }
+
+    func playThroughoutTheDay(_ url: URL, in mood: Mood) throws {
+        try ensureThroughoutTheDayCopy(of: url, in: mood)
+        for slot in TimeSlot.allCases {
+            if let assigned = wallpaper(named: url.lastPathComponent, for: slot, in: mood) {
+                try removeWallpaperAssignment(assigned, from: slot, in: mood)
+            }
+        }
+    }
+
+    func addWallpaperAssignment(_ url: URL, to slot: TimeSlot, in mood: Mood) throws {
+        let destinationFolder = folderURL(for: slot, in: mood)
+        let destination = destinationFolder.appendingPathComponent(url.lastPathComponent)
+        if fileManager.fileExists(atPath: destination.path) {
+            return
+        }
+        try fileManager.copyItem(at: url, to: destination)
+        touch(mood)
+        objectWillChange.send()
+    }
+
+    func removeWallpaperAssignment(_ url: URL, from slot: TimeSlot, in mood: Mood) throws {
+        let folder = folderURL(for: slot, in: mood).standardizedFileURL
+        guard url.deletingLastPathComponent().standardizedFileURL == folder else { return }
+        try ensureThroughoutTheDayCopyIfLastAssignment(url, in: mood)
+        try fileManager.removeItem(at: url)
+        touch(mood)
+        objectWillChange.send()
+    }
+
+    func vibeSourceItems(in mood: Mood) -> [WallpaperLibraryItem] {
+        var seen = Set<String>()
+        var items: [WallpaperLibraryItem] = []
+        for url in allDayWallpapers(in: mood) {
+            seen.insert(url.lastPathComponent)
+            items.append(WallpaperLibraryItem(url: url, placement: .throughoutTheDay))
+        }
+        for slot in TimeSlot.allCases {
+            for url in wallpapers(for: slot, in: mood) where seen.insert(url.lastPathComponent).inserted {
+                items.append(WallpaperLibraryItem(url: url, placement: .during(slot)))
+            }
+        }
+        return items.sorted {
+            $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
+        }
+    }
+
+    private func wallpaper(named filename: String, for slot: TimeSlot, in mood: Mood) -> URL? {
+        wallpapers(for: slot, in: mood).first { $0.lastPathComponent == filename }
+    }
+
+    private func ensureThroughoutTheDayCopy(of url: URL, in mood: Mood) throws {
+        let destination = allDayFolderURL(in: mood).appendingPathComponent(url.lastPathComponent)
+        if fileManager.fileExists(atPath: destination.path) {
+            return
+        }
+        try fileManager.copyItem(at: url, to: destination)
+        touch(mood)
+        objectWillChange.send()
+    }
+
+    private func ensureThroughoutTheDayCopyIfLastAssignment(_ url: URL, in mood: Mood) throws {
+        let name = url.lastPathComponent
+        let remainsElsewhere = TimeSlot.allCases.contains { slot in
+            wallpapers(for: slot, in: mood).contains {
+                $0.lastPathComponent == name && $0.standardizedFileURL != url.standardizedFileURL
+            }
+        }
+        let inVibePool = allDayWallpapers(in: mood).contains { $0.lastPathComponent == name }
+        if remainsElsewhere || inVibePool {
+            return
+        }
+        try ensureThroughoutTheDayCopy(of: url, in: mood)
+    }
+
     /// Sanitized, collision-free destination filename. Same rule as
     /// UserWallpaperManager.normalizedImportDestination.
     nonisolated static func importDestination(for sourceURL: URL, in directory: URL) -> URL {

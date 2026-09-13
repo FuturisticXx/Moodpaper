@@ -120,6 +120,27 @@ enum HorizonScheduleDefaults {
         return slots.filter { enabledMap[$0] ?? true }
     }
 
+    static func isSlotEnabled(_ slotID: String, defaults: UserDefaults = .standard) -> Bool {
+        guard let data = defaults.data(forKey: slotEnabledKey),
+              let decoded = try? JSONDecoder().decode([String: Bool].self, from: data),
+              let value = decoded[slotID] else {
+            return true
+        }
+        return value
+    }
+
+    static func setSlotEnabled(_ enabled: Bool, slotID: String, defaults: UserDefaults = .standard) {
+        var map: [String: Bool] = [:]
+        if let data = defaults.data(forKey: slotEnabledKey),
+           let decoded = try? JSONDecoder().decode([String: Bool].self, from: data) {
+            map = decoded
+        }
+        map[slotID] = enabled
+        if let encoded = try? JSONEncoder().encode(map) {
+            defaults.set(encoded, forKey: slotEnabledKey)
+        }
+    }
+
     static func validatedFocusSlot(
         preferred slot: String,
         mode: String,

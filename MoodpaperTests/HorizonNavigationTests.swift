@@ -113,6 +113,14 @@ final class HorizonNavigationTests: XCTestCase {
         XCTAssertFalse(source.contains("Set as Wallpaper"))
     }
 
+    func testVibeDetailOffersShapeMyDayWithoutRequiringTimeSlots() throws {
+        let source = try contents("Moodpaper/MoodsView.swift")
+        XCTAssertTrue(source.contains("Shape My Day"))
+        XCTAssertTrue(source.contains("How often"))
+        XCTAssertFalse(source.contains("Anytime"))
+        XCTAssertFalse(source.contains("Text(\"All Day\")"))
+    }
+
     private func contents(_ relativePath: String) throws -> String {
         try String(
             contentsOf: repoRoot.appendingPathComponent(relativePath),

@@ -173,7 +173,7 @@ final class ReleaseReadinessTests: XCTestCase {
         // per user action). A view calling applyMoodChange directly
         // reintroduces the asymmetry class from tasks/lessons.md 2026-05-25
         // or double-applies on activation.
-        for viewFile in ["Moodpaper/HorizonSettingsView.swift", "Moodpaper/MoodsView.swift", "Moodpaper/UserLibraryView.swift", "Moodpaper/DashboardView.swift", "Moodpaper/ContentView.swift", "Moodpaper/LibraryView.swift"] {
+        for viewFile in ["Moodpaper/HorizonSettingsView.swift", "Moodpaper/MoodsView.swift", "Moodpaper/UserLibraryView.swift", "Moodpaper/DashboardView.swift", "Moodpaper/ContentView.swift", "Moodpaper/LibraryView.swift", "Moodpaper/ShapeMyDayView.swift"] {
             let source = try String(
                 contentsOf: repoRoot.appendingPathComponent(viewFile),
                 encoding: .utf8
@@ -286,5 +286,56 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(source.contains("SidebarSectionHeader(\"Debug\""))
         XCTAssertFalse(source.contains("SidebarItem(section: .diagnostics"))
         XCTAssertFalse(source.contains("case .diagnostics"))
+    }
+
+    func testShapeMyDayIsOptionalProgressiveDisclosureOverDetailedPeriods() throws {
+        let editor = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodsView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(editor.contains("Shape My Day"))
+        XCTAssertTrue(editor.contains("showingShapeMyDay"))
+        XCTAssertTrue(editor.contains("VibeHowOftenControl"))
+
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/ShapeMyDayView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("Text(\"Shape My Day\")"))
+        XCTAssertTrue(source.contains("All Periods"))
+        XCTAssertTrue(source.contains("Using photos from this Vibe."))
+        XCTAssertTrue(source.contains("Skip this time of day"))
+        XCTAssertTrue(source.contains("Assign selected"))
+        XCTAssertTrue(source.contains("Use During"))
+        XCTAssertTrue(source.contains("dropDestination"))
+        XCTAssertTrue(source.contains("accessibilityAction"))
+        for name in ["Deep Night", "Dawn", "Sunrise", "Morning", "Midday", "Afternoon", "Golden Hour", "Dusk"] {
+            XCTAssertTrue(source.contains("slot.displayName") || source.contains(name))
+        }
+        XCTAssertTrue(source.contains("ForEach(TimeSlot.allCases)"))
+        XCTAssertFalse(source.contains("Anytime"))
+        XCTAssertFalse(source.contains("All Day"))
+        XCTAssertFalse(source.contains("applyMoodChange()"))
+    }
+
+    func testDashboardAndWallpapersRemainUnchangedByShapeMyDay() throws {
+        let dashboard = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/DashboardView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(dashboard.contains("Shape My Day"))
+        XCTAssertFalse(dashboard.contains("Anytime"))
+        XCTAssertTrue(dashboard.contains("Keep This Wallpaper"))
+        XCTAssertTrue(dashboard.contains("let cardHeight: CGFloat = 260"))
+
+        let wallpapers = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(wallpapers.contains("Shape My Day"))
+        XCTAssertFalse(wallpapers.contains("Anytime"))
+        XCTAssertTrue(wallpapers.contains("Play Throughout the Day"))
+        XCTAssertTrue(wallpapers.contains("Use During"))
+        XCTAssertTrue(wallpapers.contains("store.libraryItems(in: mood)"))
     }
 }
