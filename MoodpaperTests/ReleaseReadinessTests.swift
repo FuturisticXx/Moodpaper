@@ -176,7 +176,7 @@ final class ReleaseReadinessTests: XCTestCase {
         }
     }
 
-    func testDashboardSkipButtonShowsManagerBackedChangingState() throws {
+    func testDashboardNextButtonShowsManagerBackedChangingState() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/DashboardView.swift"),
             encoding: .utf8
@@ -187,6 +187,10 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(source.contains("if wallpaperManager.isChangingWallpaper"))
         XCTAssertTrue(source.contains("Text(\"Changing…\")"))
         XCTAssertTrue(source.contains(".disabled(wallpaperManager.isChangingWallpaper)"))
+        XCTAssertTrue(source.contains("Text(\"Next\")"))
+        XCTAssertFalse(source.contains("Text(\"Skip\")"))
+        XCTAssertTrue(source.contains("Keep This Wallpaper"))
+        XCTAssertTrue(source.contains("heroActionLabel(title: \"Resume\")"))
     }
 
     func testDashboardCurrentWallpaperCallbacksDeferManagerMutationsOutOfViewUpdates() throws {

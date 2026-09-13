@@ -113,14 +113,39 @@ final class HorizonScheduleSettings: ObservableObject {
 enum HorizonSettingsSection: String, CaseIterable, Identifiable {
     case dashboard, schedule, library, moods, focusMode, multiDisplay, appSettings
     var id: String { rawValue }
+
+    /// Destinations shown on the sidebar rail. Schedule, Focus, and Displays
+    /// stay available from Settings rather than as top-level items.
+    static var railSections: [HorizonSettingsSection] {
+        [.dashboard, .library, .moods, .appSettings]
+    }
+
+    static let selectedSectionKey = "settings.selectedSection"
+
+    /// Maps a persisted or legacy section id onto a Phase 2 destination.
+    static func migrating(from persistedRaw: String?) -> HorizonSettingsSection {
+        switch persistedRaw {
+        case "now", "dashboard", .none:
+            return .dashboard
+        case "wallpapers", "library":
+            return .library
+        case "vibes", "moods":
+            return .moods
+        case "schedule", "focusMode", "multiDisplay", "appSettings", "settings":
+            return .appSettings
+        default:
+            return .dashboard
+        }
+    }
+
     var title: String {
         switch self {
-        case .dashboard:    return "Dashboard"
+        case .dashboard:    return "Now"
         case .schedule:     return "Schedule"
-        case .library:      return "Library"
+        case .library:      return "Wallpapers"
         case .moods:        return "Vibes"
         case .focusMode:    return "Focus Mode"
-        case .multiDisplay: return "Multi-Display"
+        case .multiDisplay: return "Displays"
         case .appSettings:  return "Settings"
         }
     }
@@ -228,10 +253,19 @@ private struct WindowTransparencyBridge: NSViewRepresentable {
 
 // MARK: - Root
 
+private enum SettingsHostPage: Equatable {
+    case root
+    case schedule
+    case focusMode
+    case multiDisplay
+}
+
 struct HorizonSettingsRootView: View {
     @EnvironmentObject private var wallpaperManager: WallpaperManager
     @StateObject private var scheduleSettings = HorizonScheduleSettings()
-    @State private var selectedSection: HorizonSettingsSection? = .dashboard
+    @AppStorage(HorizonSettingsSection.selectedSectionKey) private var persistedSection = "dashboard"
+    @State private var selectedSection: HorizonSettingsSection?
+    @State private var settingsHostPage: SettingsHostPage = .root
     private let sidebarWidth: CGFloat = 220
 
     var body: some View {
@@ -251,6 +285,17 @@ struct HorizonSettingsRootView: View {
         .background(VibrantBackground(material: .hudWindow).ignoresSafeArea())
         .frame(minWidth: 1168, minHeight: 792)
         .background(WindowTransparencyBridge())
+        .onAppear {
+            selectedSection = HorizonSettingsSection.migrating(from: persistedSection)
+        }
+        .onChange(of: selectedSection) { _, newValue in
+            if let newValue {
+                persistedSection = newValue.rawValue
+            }
+            if newValue != .appSettings {
+                settingsHostPage = .root
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToMoods)) { _ in
             selectedSection = .moods
         }
@@ -279,8 +324,57 @@ struct HorizonSettingsRootView: View {
             MultiDisplaySettingsView()
                 .environmentObject(wallpaperManager)
         case .appSettings:
-            AppSettingsView()
+            switch settingsHostPage {
+            case .root:
+                AppSettingsView(
+                    onOpenSchedule: { settingsHostPage = .schedule },
+                    onOpenFocus: { settingsHostPage = .focusMode },
+                    onOpenDisplays: { settingsHostPage = .multiDisplay }
+                )
                 .environmentObject(wallpaperManager)
+            case .schedule:
+                SettingsHostedPage(title: "Schedule", onBack: { settingsHostPage = .root }) {
+                    ScheduleSettingsView()
+                        .environmentObject(scheduleSettings)
+                }
+            case .focusMode:
+                SettingsHostedPage(title: "Focus Mode", onBack: { settingsHostPage = .root }) {
+                    FocusModeSettingsView()
+                }
+            case .multiDisplay:
+                SettingsHostedPage(title: "Displays", onBack: { settingsHostPage = .root }) {
+                    MultiDisplaySettingsView()
+                        .environmentObject(wallpaperManager)
+                }
+            }
+        }
+    }
+}
+
+private struct SettingsHostedPage<Content: View>: View {
+    let title: String
+    let onBack: () -> Void
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button(action: onBack) {
+                    Label("Settings", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Back to Settings")
+                Spacer()
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Color.clear.frame(width: 88, height: 1)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
@@ -847,6 +941,9 @@ struct AppSettingsView: View {
     @AppStorage("temperatureUnit")       private var temperatureUnit = "Fahrenheit"
     @AppStorage("windSpeedUnit")         private var windSpeedUnit = "mph"
     @AppStorage(HorizonScheduleDefaults.timeSlotModeKey) private var timeSlotMode = "Detailed"
+    var onOpenSchedule: () -> Void = {}
+    var onOpenFocus: () -> Void = {}
+    var onOpenDisplays: () -> Void = {}
 
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -891,6 +988,32 @@ struct AppSettingsView: View {
                     Text("General Preferences, Permissions, and Display Options.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+                }
+
+                SettingsGroup(title: "Playback and Displays") {
+                    SettingsNavigationRow(
+                        title: "Schedule",
+                        subtitle: "Time of day, how often wallpapers change, and Keep this wallpaper",
+                        symbol: "calendar.day.timeline.left",
+                        colors: [.purple, .pink],
+                        action: onOpenSchedule
+                    )
+                    Divider().opacity(0.35).padding(.leading, 52)
+                    SettingsNavigationRow(
+                        title: "Focus Mode",
+                        subtitle: "Use a wallpaper during meetings",
+                        symbol: "person.fill.viewfinder",
+                        colors: [.blue, .teal],
+                        action: onOpenFocus
+                    )
+                    Divider().opacity(0.35).padding(.leading, 52)
+                    SettingsNavigationRow(
+                        title: "Displays",
+                        subtitle: "Connected displays and Spaces",
+                        symbol: "rectangle.split.2x1",
+                        colors: [.green, .mint],
+                        action: onOpenDisplays
+                    )
                 }
 
                 // MARK: General
@@ -1239,6 +1362,44 @@ private struct NightStartRow: View {
     }
 }
 
+private struct SettingsNavigationRow: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+    let colors: [Color]
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                SettingsIconBox(symbol: symbol, color: colors.first ?? .secondary, gradient: colors)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityHint(subtitle)
+        .liquidGlassHoverRow(isHovered: isHovered, glowColor: colors.first ?? .secondary)
+        .onHover { isHovered = $0 }
+    }
+}
+
 private struct SettingsToggleRow: View {
     let title: String
     let subtitle: String
@@ -1383,17 +1544,11 @@ private struct HorizonSidebar: View {
                     SidebarItem(section: .dashboard, selected: $selectedSection)
 
                     SidebarSectionHeader("Wallpapers", color: .orange)
-                    SidebarItem(section: .schedule,  selected: $selectedSection)
-                    SidebarItem(section: .library,   selected: $selectedSection)
-
-                    SidebarSectionHeader("Features", color: .purple)
-                    SidebarItem(section: .moods,        selected: $selectedSection)
-                    SidebarItem(section: .multiDisplay, selected: $selectedSection)
-                    SidebarItem(section: .focusMode,    selected: $selectedSection)
+                    SidebarItem(section: .library, selected: $selectedSection)
+                    SidebarItem(section: .moods, selected: $selectedSection)
 
                     SidebarSectionHeader("Account", color: .teal)
-                    SidebarItem(section: .appSettings,  selected: $selectedSection)
-
+                    SidebarItem(section: .appSettings, selected: $selectedSection)
                 }
                 .padding(.horizontal, 10)
                 .padding(.top, 4)
@@ -1620,6 +1775,7 @@ private struct SidebarItem: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(section.title)
         .onHover { isHovered = $0 }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isHovered)

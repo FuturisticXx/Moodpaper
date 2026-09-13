@@ -8,124 +8,37 @@ struct DashboardView: View {
     @EnvironmentObject private var wallpaperManager: WallpaperManager
     @StateObject private var weatherService = HorizonWeatherService.shared
     @StateObject private var locationService = LocationService.shared
-    @StateObject private var userWallpaperManager = UserWallpaperManager.shared
 
-    // Get actual frequency from UserDefaults (matches ScheduleSettingsView)
-    private var wallpapersPerDay: Int {
-        let stored = UserDefaults.standard.double(forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
-        return stored == 0 ? 8 : Int(stored)
-    }
-
-    // Get actual wallpapers shown today from history
-    private var wallpapersShownToday: Int {
-        wallpaperManager.todayHistory.count
-    }
-
-    // Get current time slot
     private var currentTimeSlot: String {
         wallpaperManager.currentTimeSlot()
     }
 
-    private var currentSlotInfo: (title: String, color: Color)? {
-        let slot = HorizonScheduleSettings.timeSlots.first(where: { $0.id == currentTimeSlot })
-        guard let slot = slot else { return nil }
-        return (slot.title, HorizonColors.colorForSlot(slot.id))
-    }
-
-
-    private var nextChangeText: String {
-        wallpaperManager.nextChangeCountdown
-    }
-
     var body: some View {
-        ScrollViewReader { scrollProxy in
-            ScrollView {
-                VStack(spacing: HorizonSpacing.xl) {
-                // Greeting Header
+        ScrollView {
+            VStack(spacing: HorizonSpacing.xl) {
                 GreetingHeader(locationService: locationService)
                     .padding(.horizontal, HorizonSpacing.xxxl)
                     .padding(.top, HorizonSpacing.xl)
-                    .id("dashboard-top")   // scroll anchor for Today Preview's View buttons
+                    .id("dashboard-top")
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .onAppear {
                         locationService.startUpdatingLocation()
                     }
 
-                // Weather & Current Wallpaper Cards
-                GeometryReader { geometry in
-                    let cardWidth = (geometry.size.width - HorizonSpacing.lg) / 2
-                    let cardHeight: CGFloat = 260
-                    HStack(spacing: HorizonSpacing.lg) {
-                        WeatherCard(weatherService: weatherService)
-                            .frame(width: cardWidth, height: cardHeight)
-                            .transition(.asymmetric(
-                                insertion: .scale(scale: 0.9).combined(with: .opacity),
-                                removal: .scale(scale: 0.9).combined(with: .opacity)
-                            ))
-                        CurrentWallpaperCard(wallpaperManager: wallpaperManager, currentSlot: currentTimeSlot)
-                            .frame(width: cardWidth, height: cardHeight)
-                            .transition(.asymmetric(
-                                insertion: .scale(scale: 0.9).combined(with: .opacity),
-                                removal: .scale(scale: 0.9).combined(with: .opacity)
-                            ))
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                }
-                .frame(height: 260)
-                .padding(.horizontal, HorizonSpacing.xxxl)
-                .task {
-                    await weatherService.refreshWeather(reason: "dashboardAppeared")
-                }
-
-                // Stats Row
-                HStack(spacing: HorizonSpacing.lg) {
-                    MoodToggleCard()
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.95).combined(with: .opacity),
-                        removal: .scale(scale: 0.95).combined(with: .opacity)
-                    ))
-
-                    StatCard(
-                        title: "Next Change",
-                        value: nextChangeText,
-                        subtitle: "Wallpaper Swap",
-                        icon: "clock.arrow.circlepath",
-                        color: HorizonColors.secondaryAccent
-                    )
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.95).combined(with: .opacity),
-                        removal: .scale(scale: 0.95).combined(with: .opacity)
-                    ))
-
-                    StatCard(
-                        title: "Current Slot",
-                        value: currentSlotInfo?.title ?? "Automatic",
-                        subtitle: "Time Aware",
-                        icon: "sparkles",
-                        color: HorizonColors.secondaryAccent
-                    )
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.95).combined(with: .opacity),
-                        removal: .scale(scale: 0.95).combined(with: .opacity)
-                    ))
-                }
-                .padding(.horizontal, HorizonSpacing.xxxl)
-
-
-                // Timeline
-                TimelineVisualization(wallpapersPerDay: wallpapersPerDay)
-                    .padding(.horizontal, HorizonSpacing.xxxl)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-
-                TodayPreviewSection(
+                NowStatusRow(
                     wallpaperManager: wallpaperManager,
-                    weatherService: weatherService,
-                    scrollProxy: scrollProxy
+                    weatherService: weatherService
                 )
                 .padding(.horizontal, HorizonSpacing.xxxl)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
 
-                // Recent History should reflect actual wallpaper changes for all users.
+                CurrentWallpaperCard(wallpaperManager: wallpaperManager, currentSlot: currentTimeSlot)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 360)
+                    .padding(.horizontal, HorizonSpacing.xxxl)
+                    .task {
+                        await weatherService.refreshWeather(reason: "dashboardAppeared")
+                    }
+
                 RecentHistorySection(
                     history: Array(wallpaperManager.history.prefix(5)),
                     onSetCurrent: { entry in
@@ -141,7 +54,6 @@ struct DashboardView: View {
             .frame(maxWidth: 1120)
             .frame(maxWidth: .infinity)
         }
-        }   // ScrollViewReader
     }
 }
 
@@ -174,7 +86,6 @@ private struct DashboardSupportFooter: View {
 
 private struct GreetingHeader: View {
     @ObservedObject var locationService: LocationService
-    @EnvironmentObject var wallpaperManager: WallpaperManager
     @State private var appeared = false
 
     // DateFormatter is expensive to construct; hoist to file-static so we
@@ -200,16 +111,6 @@ private struct GreetingHeader: View {
         Self.dateFormatter.string(from: Date())
     }
 
-    private var currentSlot: HorizonScheduleSettings.TimeSlot? {
-        let id = wallpaperManager.currentTimeSlot()
-        return HorizonScheduleSettings.timeSlots.first { $0.id == id }
-    }
-
-    private var slotColor: Color {
-        guard let slot = currentSlot else { return HorizonColors.primaryAccent }
-        return HorizonColors.colorForSlot(slot.id)
-    }
-
     var body: some View {
         VStack(spacing: HorizonSpacing.xs) {
 
@@ -221,21 +122,15 @@ private struct GreetingHeader: View {
 
                 Spacer()
 
-                if let slot = currentSlot {
-                    HStack(spacing: 5) {
-                        Image(systemName: slot.symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                            .symbolRenderingMode(.monochrome)
-                        Text(slot.title.uppercased())
-                            .font(.system(size: 11, weight: .semibold))
-                            .kerning(0.6)
-                    }
-                    .foregroundStyle(.primary)
+                Text("Now")
+                    .font(.system(size: 11, weight: .semibold))
+                    .kerning(0.6)
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
-                }
+                    .accessibilityHidden(true)
             }
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 8)
@@ -270,6 +165,94 @@ private struct GreetingHeader: View {
         }
         .frame(maxWidth: .infinity)
         .onAppear { appeared = true }
+    }
+}
+
+// MARK: - Now status
+
+private struct NowStatusRow: View {
+    @ObservedObject var wallpaperManager: WallpaperManager
+    @ObservedObject var weatherService: HorizonWeatherService
+    @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation = false
+    @AppStorage("temperatureUnit") private var temperatureUnit = "Fahrenheit"
+    @State private var weatherAttribution: WeatherAttribution?
+
+    private var whyLine: String {
+        if !wallpaperManager.isRunning {
+            return "Moodpaper is paused"
+        }
+        if pauseRotation {
+            return "Keeping this wallpaper"
+        }
+        return "Playing throughout the day"
+    }
+
+    private var sourceLine: String {
+        MoodStore.shared.activeMood.map { "From \($0.name)" } ?? "Using photos from this Vibe"
+    }
+
+    private var weatherCaption: String {
+        guard let weather = weatherService.currentWeather else {
+            return weatherService.weatherDescription
+        }
+        let temp = temperatureUnit == "Celsius" ? weather.temperature : weather.temperatureFahrenheit
+        let condition = weatherService.weatherDescription.components(separatedBy: ",").first ?? ""
+        return "\(Int(temp.rounded()))° · \(condition)"
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: HorizonSpacing.lg) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(whyLine)
+                    .font(HorizonTypography.title3)
+                    .foregroundColor(HorizonColors.textPrimary)
+                Text(sourceLine)
+                    .font(HorizonTypography.callout)
+                    .foregroundColor(HorizonColors.textSecondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(whyLine). \(sourceLine)")
+            .accessibilityAddTraits(.updatesFrequently)
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(weatherCaption)
+                    .font(HorizonTypography.callout)
+                    .foregroundColor(HorizonColors.textSecondary)
+                    .multilineTextAlignment(.trailing)
+                weatherAttributionLink
+            }
+        }
+        .task {
+            guard weatherAttribution == nil else { return }
+            weatherAttribution = try? await WeatherKit.WeatherService.shared.attribution
+        }
+    }
+
+    @ViewBuilder
+    private var weatherAttributionLink: some View {
+        if weatherService.source == "weatherkit", let attribution = weatherAttribution {
+            Link(destination: attribution.legalPageURL) {
+                HStack(spacing: 4) {
+                    Image(systemName: "applelogo")
+                    Text("Weather")
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Link(destination: weatherService.attributionURL) {
+                HStack(spacing: 4) {
+                    Image(systemName: weatherService.weatherIcon)
+                    Text(weatherService.attributionLabel)
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 
@@ -643,7 +626,6 @@ private struct CurrentWallpaperCard: View {
     @State private var isHovered = false
     @State private var hostingScreen: NSScreen?
     @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation: Bool = false
-    @State private var showingUnpinAlert = false
     private let appDidBecomeActive = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
     private let activeSpaceDidChange = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
     // After waking from sleep, the OS may have changed the desktop image
@@ -731,30 +713,33 @@ private struct CurrentWallpaperCard: View {
                     .frame(height: 60)
             }
 
-            // Skip button, top trailing
             VStack {
-                HStack {
-                    // Pin indicator
+                HStack(spacing: 8) {
                     if pauseRotation {
                         Button {
-                            showingUnpinAlert = true
+                            pauseRotation = false
                         } label: {
-                            Image(systemName: "pin.fill")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(6)
-                                .background(Circle().fill(Color.yellow.opacity(0.8)))
-                                .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
-                                .padding(10)
+                            heroActionLabel(title: "Resume")
                         }
                         .buttonStyle(.plain)
-                        .help("Click to unpin")
-                        .accessibilityLabel("Unpin current wallpaper")
+                        .help("Return control to the active Vibe")
+                        .accessibilityLabel("Resume")
+                        .accessibilityHint("Returns wallpaper changes to the active Vibe without rotating immediately")
+                    } else {
+                        Button {
+                            pauseRotation = true
+                        } label: {
+                            heroActionLabel(title: "Keep This Wallpaper")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Keep this wallpaper until you Resume or tap Next")
+                        .accessibilityLabel("Keep This Wallpaper")
                     }
 
                     Spacer()
 
                     Button {
+                        pauseRotation = false
                         wallpaperManager.skipToNext()
                     } label: {
                         HStack(spacing: 5) {
@@ -768,7 +753,7 @@ private struct CurrentWallpaperCard: View {
                             } else {
                                 Image(systemName: "forward.fill")
                                     .font(.system(size: 10, weight: .semibold))
-                                Text("Skip")
+                                Text("Next")
                                     .font(.system(size: 12, weight: .semibold))
                             }
                         }
@@ -776,15 +761,7 @@ private struct CurrentWallpaperCard: View {
                         .frame(minWidth: 62)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(.ultraThinMaterial)
-                                .environment(\.colorScheme, .dark)
-                                .overlay {
-                                    Capsule()
-                                        .strokeBorder(.white.opacity(0.25), lineWidth: 0.5)
-                                }
-                        )
+                        .background(heroActionCapsule)
                         .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                     }
                     .buttonStyle(.plain)
@@ -792,25 +769,17 @@ private struct CurrentWallpaperCard: View {
                     .accessibilityLabel(
                         wallpaperManager.isChangingWallpaper
                             ? "Changing wallpaper"
-                            : "Skip to next wallpaper"
+                            : "Next wallpaper"
                     )
                     .help(
                         wallpaperManager.isChangingWallpaper
                             ? "Changing wallpaper"
-                            : "Skip to next wallpaper"
+                            : "Next wallpaper"
                     )
-                    .padding(10)
                 }
+                .padding(10)
 
                 Spacer()
-            }
-            .alert("Unpin Wallpaper", isPresented: $showingUnpinAlert) {
-                Button("Cancel", role: .cancel) { }
-                Button("Unpin", role: .destructive) {
-                    pauseRotation = false
-                }
-            } message: {
-                Text("Are you sure you want to unpin this wallpaper? Rotation will resume.")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -847,6 +816,27 @@ private struct CurrentWallpaperCard: View {
         .onAppear {
             deferWallpaperSyncAndPreviewRefresh()
         }
+    }
+
+    @ViewBuilder
+    private func heroActionLabel(title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(heroActionCapsule)
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+    }
+
+    private var heroActionCapsule: some View {
+        Capsule()
+            .fill(.ultraThinMaterial)
+            .environment(\.colorScheme, .dark)
+            .overlay {
+                Capsule()
+                    .strokeBorder(.white.opacity(0.25), lineWidth: 0.5)
+            }
     }
 
     private func openLibrary() {
