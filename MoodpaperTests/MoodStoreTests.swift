@@ -17,6 +17,7 @@ final class MoodStoreTests: XCTestCase {
         suiteName = "HorizonTests.MoodStore.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
         defaults.removePersistentDomain(forName: suiteName)
+        LibraryMigration.testLiveLibraryRoot = nil
     }
 
     override func tearDown() {
@@ -322,7 +323,10 @@ final class MoodStoreTests: XCTestCase {
         let nestedFolder = sourceFolder.appendingPathComponent("Favorites")
         try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
         try writeTestImage(to: sourceFolder.appendingPathComponent("lake.png"))
-        try writeTestImage(to: nestedFolder.appendingPathComponent("forest.png"))
+        try writeTestImage(
+            to: nestedFolder.appendingPathComponent("forest.png"),
+            color: CGColor(red: 0.1, green: 0.8, blue: 0.2, alpha: 1)
+        )
         try Data("notes".utf8).write(to: sourceFolder.appendingPathComponent("notes.txt"))
 
         let summary = try await store.importWallpapers(from: [sourceFolder], to: .dusk, in: mood)
@@ -367,7 +371,10 @@ final class MoodStoreTests: XCTestCase {
         let nestedFolder = sourceFolder.appendingPathComponent("Favorites")
         try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
         try writeTestImage(to: sourceFolder.appendingPathComponent("lake.png"))
-        try writeTestImage(to: nestedFolder.appendingPathComponent("forest.png"))
+        try writeTestImage(
+            to: nestedFolder.appendingPathComponent("forest.png"),
+            color: CGColor(red: 0.1, green: 0.8, blue: 0.2, alpha: 1)
+        )
         try Data("notes".utf8).write(to: sourceFolder.appendingPathComponent("notes.txt"))
 
         let summary = try await store.importAllDayWallpapers(from: [sourceFolder], in: mood)

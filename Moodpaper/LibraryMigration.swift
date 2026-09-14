@@ -1,7 +1,7 @@
 import Foundation
 
 /// Catalog v2 migrator. Folder-owned wallpaper copies become first-class
-/// assets with memberships. Legacy Moods folders, backups, and the journal
+/// assets with memberships. Legacy Moods folders, backups, and journal.json
 /// stay on disk until a later approved cleanup — this type never deletes them
 /// after a successful migrate.
 enum LibraryMigration {
@@ -16,6 +16,36 @@ enum LibraryMigration {
     static var testInterruptAfterPhase: JournalPhase?
     /// Test-only: mutate staging after copy and before validate.
     static var testCorruptStagingBeforeValidation = false
+    /// Test-only stand-in for Application Support/Moodpaper. Must never point
+    /// at a real home-directory library.
+    static var testLiveLibraryRoot: URL?
+
+    struct TestHostBlockedError: LocalizedError {
+        var errorDescription: String? {
+            "Catalog v2 must not publish into the live Application Support library during tests"
+        }
+    }
+
+    static var isRunningInTestHost: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    static func defaultApplicationSupportLibraryRoot() -> URL {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Moodpaper")
+    }
+
+    static func resolvedLiveLibraryRoot() -> URL {
+        testLiveLibraryRoot ?? defaultApplicationSupportLibraryRoot()
+    }
+
+    static func mustNotPublishCatalog(to libraryRoot: URL) -> Bool {
+        guard isRunningInTestHost else { return false }
+        return libraryRoot.standardizedFileURL.path
+            == resolvedLiveLibraryRoot().standardizedFileURL.path
+    }
 
     enum JournalPhase: String, Codable {
         case started
@@ -64,6 +94,9 @@ enum LibraryMigration {
 
     @discardableResult
     static func migrateIfNeeded(libraryRoot: URL) throws -> Summary {
+        if mustNotPublishCatalog(to: libraryRoot) {
+            throw TestHostBlockedError()
+        }
         if let catalog = try? loadCatalog(from: libraryRoot), catalog.isReady {
             return Summary(
                 assetCount: catalog.assets.count,
@@ -350,6 +383,9 @@ enum LibraryMigration {
         from stagingRoot: URL,
         libraryRoot: URL
     ) throws {
+        if mustNotPublishCatalog(to: libraryRoot) {
+            throw TestHostBlockedError()
+        }
         let fileManager = FileManager.default
         let liveAssets = WallpaperCatalogFile.assetsRoot(in: libraryRoot)
         try fileManager.createDirectory(

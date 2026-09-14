@@ -102,13 +102,15 @@ final class MoodStore: ObservableObject {
 
     /// The shared instance stores under Application Support/Moodpaper/Moods.
     /// Tests inject a scratch directory and a private defaults suite so they
-    /// never touch real user state.
+    /// never touch real user state. XCTest hosts must not load or migrate
+    /// that live Application Support path.
     init(baseURL: URL? = nil, defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        let base = baseURL ?? FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Moodpaper")
+        let base = baseURL ?? LibraryMigration.resolvedLiveLibraryRoot()
         self.moodsRootURL = base.appendingPathComponent("Moods")
+        if LibraryMigration.mustNotPublishCatalog(to: base) {
+            return
+        }
         load()
         adoptCatalogIfNeeded()
         migrateVibeCadencesIfNeeded()
@@ -135,6 +137,9 @@ final class MoodStore: ObservableObject {
 
     /// Re-read the catalog after files changed underneath the store.
     func reload() {
+        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+            return
+        }
         load()
         adoptCatalogIfNeeded()
         migrateVibeCadencesIfNeeded()
@@ -808,6 +813,9 @@ final class MoodStore: ObservableObject {
     }
 
     private func load() {
+        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+            return
+        }
         try? fileManager.createDirectory(at: moodsRootURL, withIntermediateDirectories: true)
         if let data = try? Data(contentsOf: metadataURL),
            let decoded = try? JSONDecoder().decode([Mood].self, from: data) {
@@ -869,11 +877,19 @@ final class MoodStore: ObservableObject {
     }
 
     private func adoptCatalogIfNeeded() {
+        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+            catalog = nil
+            return
+        }
         if let loaded = try? LibraryMigration.loadCatalog(from: storageRootURL), loaded.isReady {
             catalog = loaded
             return
         }
         guard LibraryMigration.needsMigration(libraryRoot: storageRootURL) else { return }
+        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+            catalog = nil
+            return
+        }
         do {
             _ = try LibraryMigration.migrateIfNeeded(libraryRoot: storageRootURL)
             catalog = try LibraryMigration.loadCatalog(from: storageRootURL)
@@ -885,6 +901,9 @@ final class MoodStore: ObservableObject {
 
     func ensureCatalog() throws {
         if usesCatalog { return }
+        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+            throw LibraryMigration.TestHostBlockedError()
+        }
         if LibraryMigration.needsMigration(libraryRoot: storageRootURL) {
             _ = try LibraryMigration.migrateIfNeeded(libraryRoot: storageRootURL)
         }
@@ -902,6 +921,9 @@ final class MoodStore: ObservableObject {
 
     private func persistCatalog() throws {
         guard let catalog else { return }
+        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+            throw LibraryMigration.TestHostBlockedError()
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -1178,7 +1200,7 @@ final class MoodStore: ObservableObject {
         let failedCount: Int
     }
 
-    nonisolated static func discoveredImageURLs(_ sourceURLs: [URL]) throws -> DiscoveredImages {
+    private nonisolated static func discoveredImageURLs(_ sourceURLs: [URL]) throws -> DiscoveredImages {
         var securityScopedRoots: [URL] = []
         for url in sourceURLs where url.startAccessingSecurityScopedResource() {
             securityScopedRoots.append(url)

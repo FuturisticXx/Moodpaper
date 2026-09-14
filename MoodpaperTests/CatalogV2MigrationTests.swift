@@ -19,11 +19,13 @@ final class CatalogV2MigrationTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         LibraryMigration.testInterruptAfterPhase = nil
         LibraryMigration.testCorruptStagingBeforeValidation = false
+        LibraryMigration.testLiveLibraryRoot = nil
     }
 
     override func tearDown() {
         LibraryMigration.testInterruptAfterPhase = nil
         LibraryMigration.testCorruptStagingBeforeValidation = false
+        LibraryMigration.testLiveLibraryRoot = nil
         try? FileManager.default.removeItem(at: libraryRoot)
         defaults.removePersistentDomain(forName: suiteName)
         defaults = nil
@@ -161,7 +163,7 @@ final class CatalogV2MigrationTests: XCTestCase {
         let store = makeStore()
         let vibe = try XCTUnwrap(store.create(name: "Ambiguous"))
         let a = store.allDayFolderURL(in: vibe).appendingPathComponent("photo.jpg")
-        let b = store.folderURL(for: .night, in: vibe).appendingPathComponent("photo.jpg")
+        let b = store.folderURL(for: .evening, in: vibe).appendingPathComponent("photo.jpg")
         try Data([0xFF, 0xD8, 0xFF, 0x01]).write(to: a)
         try Data([0xFF, 0xD8, 0xFF, 0x02]).write(to: b)
 
@@ -343,5 +345,53 @@ final class CatalogV2MigrationTests: XCTestCase {
         XCTAssertEqual(journal.phase, .complete)
         XCTAssertEqual(journal.migrationVersion, LibraryMigration.migrationVersion)
         XCTAssertEqual(journal.schemaVersion, LibraryMigration.schemaVersion)
+    }
+
+    /// The live Application Support path is represented by a temp mock, never
+    /// the real home directory. Test hosts must not publish catalog.json there.
+    func testTestHostCannotPublishCatalogIntoLiveApplicationSupportPath() throws {
+        let mockLive = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MockApplicationSupport-Moodpaper-\(UUID().uuidString)")
+        LibraryMigration.testLiveLibraryRoot = mockLive
+        let suite = "HorizonTests.LiveGuard.\(UUID().uuidString)"
+        let isolatedDefaults = UserDefaults(suiteName: suite)!
+        isolatedDefaults.removePersistentDomain(forName: suite)
+        defer {
+            LibraryMigration.testLiveLibraryRoot = nil
+            isolatedDefaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: mockLive)
+        }
+
+        let vibeID = UUID().uuidString.lowercased()
+        let allDay = mockLive
+            .appendingPathComponent("Moods")
+            .appendingPathComponent(vibeID)
+            .appendingPathComponent(MoodStore.allDayFolderName)
+        try writePNG(to: allDay.appendingPathComponent("library.png"))
+
+        XCTAssertTrue(LibraryMigration.mustNotPublishCatalog(to: mockLive))
+        XCTAssertTrue(LibraryMigration.needsMigration(libraryRoot: mockLive))
+        XCTAssertThrowsError(try LibraryMigration.migrateIfNeeded(libraryRoot: mockLive)) { error in
+            XCTAssertTrue(error is LibraryMigration.TestHostBlockedError)
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: WallpaperCatalogFile.catalogURL(in: mockLive).path
+            )
+        )
+
+        let defaultPathStore = MoodStore(baseURL: nil, defaults: isolatedDefaults)
+        XCTAssertFalse(defaultPathStore.usesCatalog)
+        XCTAssertTrue(defaultPathStore.moods.isEmpty)
+        XCTAssertThrowsError(try defaultPathStore.ensureCatalog())
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: WallpaperCatalogFile.catalogURL(in: mockLive).path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: allDay.appendingPathComponent("library.png").path),
+            "legacy Moods files must remain"
+        )
     }
 }
