@@ -161,6 +161,110 @@ final class CatalogV2MigrationTests: XCTestCase {
         XCTAssertEqual(makeStore().catalog?.assets.count, 1)
     }
 
+    // MARK: - Canonical originalFilename selection
+
+    func testPreferredOriginalFilenameIsDeterministicAcrossPathOrder() {
+        let paths = [
+            "/lib/Moods/v1/Morning/lake.png",
+            "/lib/Moods/v1/AllDay/lake-copy.png",
+            "/lib/Moods/v1/Sunrise/lake.png",
+            "/lib/Moods/v1/AllDay/lake.png",
+            "/lib/Moods/v2/AllDay/lake.png",
+            "/lib/Moods/v1/DeepNight/lake.png",
+        ]
+        let expected = "lake.png"
+        var seen = Set<String>()
+        for _ in 0..<50 {
+            let name = LibraryMigration.preferredOriginalFilename(forLegacySourcePaths: paths.shuffled())
+            seen.insert(name ?? "nil")
+        }
+        XCTAssertEqual(seen, [expected])
+        XCTAssertEqual(LibraryMigration.preferredOriginalFilename(forLegacySourcePaths: paths.reversed()), expected)
+        XCTAssertNil(LibraryMigration.preferredOriginalFilename(forLegacySourcePaths: []))
+    }
+
+    func testPreferredOriginalFilenameRules() {
+        // 1. General source beats a period copy, even when longer and later in sort order.
+        XCTAssertEqual(
+            LibraryMigration.preferredOriginalFilename(forLegacySourcePaths: [
+                "/lib/Moods/v1/Morning/a.png",
+                "/lib/Moods/v1/AllDay/zz-long-name.png",
+            ]),
+            "zz-long-name.png"
+        )
+        // 2. Among general sources, the shortest basename wins.
+        XCTAssertEqual(
+            LibraryMigration.preferredOriginalFilename(forLegacySourcePaths: [
+                "/lib/Moods/v1/AllDay/lake-copy.png",
+                "/lib/Moods/v1/AllDay/lake.png",
+            ]),
+            "lake.png"
+        )
+        // 3. Equal length: lexical basename, then full path.
+        XCTAssertEqual(
+            LibraryMigration.preferredOriginalFilename(forLegacySourcePaths: [
+                "/lib/Moods/v1/AllDay/b.png",
+                "/lib/Moods/v1/AllDay/a.png",
+            ]),
+            "a.png"
+        )
+        // Period-only sources still get a name.
+        XCTAssertEqual(
+            LibraryMigration.preferredOriginalFilename(forLegacySourcePaths: [
+                "/lib/Moods/v1/Morning/sky.png",
+                "/lib/Moods/v1/Dusk/sky.png",
+            ]),
+            "sky.png"
+        )
+    }
+
+    /// The visible name follows the rule; identity, hash, memberships, and
+    /// assignments are unaffected by which path sorts first.
+    func testCollapsedDuplicateExposesGeneralShortestFilenameWithoutChangingIdentity() throws {
+        let store = makeStore()
+        let calm = try XCTUnwrap(store.create(name: "Calm"))
+        let bold = try XCTUnwrap(store.create(name: "Bold"))
+        let lake = store.allDayFolderURL(in: calm).appendingPathComponent("lake.png")
+        let lakeCopy = store.allDayFolderURL(in: calm).appendingPathComponent("lake-copy.png")
+        try writePNG(to: lake)
+        try FileManager.default.copyItem(at: lake, to: lakeCopy)
+        try store.assignWallpaper(lake, to: .morning, in: calm)
+        let boldLake = store.allDayFolderURL(in: bold).appendingPathComponent("lake.png")
+        try FileManager.default.createDirectory(at: boldLake.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: lake, to: boldLake)
+        let expectedHash = try WallpaperIdentity.sha256Hex(of: lake)
+        let legacyFiles = LibraryMigration.legacyImageFiles(in: libraryRoot)
+        // Within Calm's general pool, sorted legacy order puts lake-copy.png
+        // before lake.png; the rule must not follow discovery order.
+        let calmGeneral = legacyFiles.filter { $0.moodID == calm.id && $0.folderName == "AllDay" }
+        XCTAssertEqual(calmGeneral.map(\.url.lastPathComponent), ["lake-copy.png", "lake.png"])
+
+        _ = try LibraryMigration.migrateIfNeeded(libraryRoot: libraryRoot)
+        let catalog = try LibraryMigration.loadCatalog(from: libraryRoot)
+        let asset = try XCTUnwrap(catalog.assets.first)
+        XCTAssertEqual(catalog.assets.count, 1)
+        XCTAssertEqual(asset.originalFilename, "lake.png")
+        XCTAssertEqual(asset.contentHash, expectedHash)
+        XCTAssertEqual(asset.legacySourcePaths.count, legacyFiles.count)
+        XCTAssertEqual(try WallpaperIdentity.sha256Hex(of: LibraryMigration.canonicalURL(for: asset, libraryRoot: libraryRoot)), expectedHash)
+
+        // Identity comes from the journal mapping (content based), not the name.
+        let journal = try LibraryMigration.loadJournal(from: libraryRoot)
+        XCTAssertEqual(Set(journal.sourcePathToAssetID.values), [asset.id])
+
+        let memberships = catalog.memberships.sorted { $0.moodID < $1.moodID }
+        XCTAssertEqual(memberships.count, 2)
+        let calmM = try XCTUnwrap(memberships.first { $0.moodID == calm.id })
+        XCTAssertTrue(calmM.throughoutTheDay)
+        XCTAssertEqual(Set(calmM.slotIDs), Set(DayPartGroup.morning.slots.map(\.rawValue)))
+        let boldM = try XCTUnwrap(memberships.first { $0.moodID == bold.id })
+        XCTAssertTrue(boldM.throughoutTheDay)
+        XCTAssertEqual(boldM.slotIDs, [])
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.dayPartRepresentation(for: .morning, in: calm), .assigned(filenames: ["lake.png"]))
+    }
+
     func testFilenameCollisionWithoutMatchingMetadataStaysDistinct() throws {
         let store = makeStore()
         let vibe = try XCTUnwrap(store.create(name: "Ambiguous"))

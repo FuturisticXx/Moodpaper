@@ -407,7 +407,36 @@ enum LibraryMigration {
             catalog.replaceMembership(membership)
         }
 
+        // Identity is settled above by content; only the visible name is chosen
+        // here, once every equivalent legacy source is known.
+        for var asset in catalog.assets {
+            if let name = preferredOriginalFilename(forLegacySourcePaths: asset.legacySourcePaths) {
+                asset.originalFilename = name
+                catalog.upsert(asset)
+            }
+        }
+
         return catalog
+    }
+
+    /// The name a deduplicated asset shows to the user. Prefers a file the
+    /// user placed in a Vibe's general (AllDay) pool over a period copy the
+    /// app generated, then the shortest basename, then a stable lexical
+    /// order, so `lake.png` wins over `lake-copy.png` and over
+    /// `Morning/lake.png` no matter how the paths happen to sort.
+    static func preferredOriginalFilename(forLegacySourcePaths paths: [String]) -> String? {
+        let ranked = paths.map { path -> (isGeneral: Bool, basename: String, path: String) in
+            let url = URL(fileURLWithPath: path)
+            let folder = url.deletingLastPathComponent().lastPathComponent
+            return (folder == "AllDay", url.lastPathComponent, path)
+        }
+        let best = ranked.min { lhs, rhs in
+            if lhs.isGeneral != rhs.isGeneral { return lhs.isGeneral }
+            if lhs.basename.count != rhs.basename.count { return lhs.basename.count < rhs.basename.count }
+            if lhs.basename != rhs.basename { return lhs.basename < rhs.basename }
+            return lhs.path < rhs.path
+        }
+        return best?.basename
     }
 
     private static func validate(
