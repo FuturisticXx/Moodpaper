@@ -20,15 +20,30 @@ enum LibraryMigration {
     /// at a real home-directory library.
     static var testLiveLibraryRoot: URL?
 
-    struct TestHostBlockedError: LocalizedError {
-        var errorDescription: String? {
-            "Catalog v2 must not publish into the live Application Support library during tests"
-        }
+    // MARK: - Migration authorization guard
+    //
+    // Catalog v2 migration against a protected library root is blocked unless
+    // the launch environment explicitly authorizes that exact root. The
+    // authorization lives only in the process environment: it is never read
+    // from or written to UserDefaults, so it cannot outlive the run. Process
+    // name, build configuration, sandbox state, and XCTest-host detection
+    // play no part in the decision.
+
+    /// Launch environment variable whose value must equal the standardized
+    /// path of the library root being migrated.
+    static let authorizationEnvironmentKey = "MOODPAPER_AUTHORIZE_CATALOG_MIGRATION"
+
+    /// Source of the launch environment. Tests inject a dictionary instead of
+    /// mutating the process environment.
+    static var environmentProvider: () -> [String: String] = {
+        ProcessInfo.processInfo.environment
     }
 
-    static var isRunningInTestHost: Bool {
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
+    static let blockedDiagnostic =
+        "Catalog migration blocked: explicit authorization required for real user library"
+
+    struct MigrationBlockedError: LocalizedError {
+        var errorDescription: String? { LibraryMigration.blockedDiagnostic }
     }
 
     static func defaultApplicationSupportLibraryRoot() -> URL {
@@ -37,14 +52,75 @@ enum LibraryMigration {
             .appendingPathComponent("Moodpaper")
     }
 
+    /// The user's real home-directory library, resolved through the passwd
+    /// database so a sandboxed process still sees the real home rather than
+    /// its container.
+    static func realUserLibraryRoot() -> URL {
+        let home: String
+        if let entry = getpwuid(getuid()), let dir = entry.pointee.pw_dir {
+            home = String(cString: dir)
+        } else {
+            home = NSHomeDirectory()
+        }
+        return URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("Moodpaper", isDirectory: true)
+    }
+
     static func resolvedLiveLibraryRoot() -> URL {
         testLiveLibraryRoot ?? defaultApplicationSupportLibraryRoot()
     }
 
-    static func mustNotPublishCatalog(to libraryRoot: URL) -> Bool {
-        guard isRunningInTestHost else { return false }
-        return libraryRoot.standardizedFileURL.path
-            == resolvedLiveLibraryRoot().standardizedFileURL.path
+    private static func comparablePath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Roots that must never migrate without explicit authorization: the real
+    /// home-directory library, this process's own default Application Support
+    /// library, and the test stand-in for the live root when one is set.
+    static func isProtectedLibraryRoot(_ libraryRoot: URL) -> Bool {
+        var protected = liveLibraryRoots()
+        if let testLiveLibraryRoot {
+            protected.append(testLiveLibraryRoot)
+        }
+        return matches(libraryRoot, anyOf: protected)
+    }
+
+    /// The two places a real user library can actually live.
+    private static func liveLibraryRoots() -> [URL] {
+        [realUserLibraryRoot(), defaultApplicationSupportLibraryRoot()]
+    }
+
+    private static func matches(_ libraryRoot: URL, anyOf roots: [URL]) -> Bool {
+        let candidate = comparablePath(libraryRoot)
+        return roots.contains { comparablePath($0) == candidate }
+    }
+
+    /// True only when the launch environment names this exact root.
+    static func isMigrationAuthorized(for libraryRoot: URL) -> Bool {
+        guard let raw = environmentProvider()[authorizationEnvironmentKey],
+              !raw.isEmpty else { return false }
+        return comparablePath(URL(fileURLWithPath: raw)) == comparablePath(libraryRoot)
+    }
+
+    /// The single decision every migration, adoption, and publish path asks.
+    static func isMigrationBlocked(for libraryRoot: URL) -> Bool {
+        isProtectedLibraryRoot(libraryRoot) && !isMigrationAuthorized(for: libraryRoot)
+    }
+
+    /// Secondary, narrower rule: an XCTest host must not even load the real
+    /// live library, so test runs cannot rewrite legacy moods.json. This is
+    /// not the migration guard; `isMigrationBlocked` holds in every host and
+    /// also covers `testLiveLibraryRoot`, which this rule deliberately skips
+    /// so tests can drive a store against a protected temp root.
+    static var isRunningInTestHost: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    static func testHostMustNotLoadLibrary(at libraryRoot: URL) -> Bool {
+        isRunningInTestHost && matches(libraryRoot, anyOf: liveLibraryRoots())
     }
 
     enum JournalPhase: String, Codable {
@@ -94,8 +170,9 @@ enum LibraryMigration {
 
     @discardableResult
     static func migrateIfNeeded(libraryRoot: URL) throws -> Summary {
-        if mustNotPublishCatalog(to: libraryRoot) {
-            throw TestHostBlockedError()
+        if isMigrationBlocked(for: libraryRoot) {
+            print("[LibraryMigration] \(blockedDiagnostic)")
+            throw MigrationBlockedError()
         }
         if let catalog = try? loadCatalog(from: libraryRoot), catalog.isReady {
             return Summary(
@@ -383,8 +460,8 @@ enum LibraryMigration {
         from stagingRoot: URL,
         libraryRoot: URL
     ) throws {
-        if mustNotPublishCatalog(to: libraryRoot) {
-            throw TestHostBlockedError()
+        if isMigrationBlocked(for: libraryRoot) {
+            throw MigrationBlockedError()
         }
         let fileManager = FileManager.default
         let liveAssets = WallpaperCatalogFile.assetsRoot(in: libraryRoot)

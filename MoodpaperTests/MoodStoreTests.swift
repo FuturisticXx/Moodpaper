@@ -18,6 +18,7 @@ final class MoodStoreTests: XCTestCase {
         defaults = UserDefaults(suiteName: suiteName)
         defaults.removePersistentDomain(forName: suiteName)
         LibraryMigration.testLiveLibraryRoot = nil
+        LibraryMigration.environmentProvider = { [:] }
     }
 
     override func tearDown() {

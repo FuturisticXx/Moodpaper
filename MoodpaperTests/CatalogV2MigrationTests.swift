@@ -20,12 +20,14 @@ final class CatalogV2MigrationTests: XCTestCase {
         LibraryMigration.testInterruptAfterPhase = nil
         LibraryMigration.testCorruptStagingBeforeValidation = false
         LibraryMigration.testLiveLibraryRoot = nil
+        LibraryMigration.environmentProvider = { [:] }
     }
 
     override func tearDown() {
         LibraryMigration.testInterruptAfterPhase = nil
         LibraryMigration.testCorruptStagingBeforeValidation = false
         LibraryMigration.testLiveLibraryRoot = nil
+        LibraryMigration.environmentProvider = { ProcessInfo.processInfo.environment }
         try? FileManager.default.removeItem(at: libraryRoot)
         defaults.removePersistentDomain(forName: suiteName)
         defaults = nil
@@ -369,10 +371,10 @@ final class CatalogV2MigrationTests: XCTestCase {
             .appendingPathComponent(MoodStore.allDayFolderName)
         try writePNG(to: allDay.appendingPathComponent("library.png"))
 
-        XCTAssertTrue(LibraryMigration.mustNotPublishCatalog(to: mockLive))
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: mockLive))
         XCTAssertTrue(LibraryMigration.needsMigration(libraryRoot: mockLive))
         XCTAssertThrowsError(try LibraryMigration.migrateIfNeeded(libraryRoot: mockLive)) { error in
-            XCTAssertTrue(error is LibraryMigration.TestHostBlockedError)
+            XCTAssertTrue(error is LibraryMigration.MigrationBlockedError)
         }
         XCTAssertFalse(
             FileManager.default.fileExists(
@@ -393,5 +395,241 @@ final class CatalogV2MigrationTests: XCTestCase {
             FileManager.default.fileExists(atPath: allDay.appendingPathComponent("library.png").path),
             "legacy Moods files must remain"
         )
+    }
+
+    // MARK: - Migration authorization guard
+
+    private static let authorizationKey = LibraryMigration.authorizationEnvironmentKey
+
+    /// A temp folder standing in for the live Application Support root. It is
+    /// registered as protected through `testLiveLibraryRoot`; the real home
+    /// directory library is never written by these tests.
+    private func makeProtectedRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ProtectedMoodpaper-\(UUID().uuidString)")
+        LibraryMigration.testLiveLibraryRoot = root
+        try writePNG(to: root
+            .appendingPathComponent("Moods")
+            .appendingPathComponent(UUID().uuidString.lowercased())
+            .appendingPathComponent(MoodStore.allDayFolderName)
+            .appendingPathComponent("library.png"))
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    private func authorize(_ root: URL) {
+        LibraryMigration.environmentProvider = {
+            [Self.authorizationKey: root.standardizedFileURL.path]
+        }
+    }
+
+    private func snapshot(of root: URL) throws -> [String: String] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return [:] }
+        var result: [String: String] = [:]
+        for case let url as URL in enumerator {
+            guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            result[url.path] = try WallpaperIdentity.sha256Hex(of: url)
+        }
+        return result
+    }
+
+    private func assertNoMigrationArtifacts(at root: URL, file: StaticString = #filePath, line: UInt = #line) {
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: WallpaperCatalogFile.catalogURL(in: root).path), "catalog.json", file: file, line: line)
+        XCTAssertFalse(fm.fileExists(atPath: WallpaperCatalogFile.journalURL(in: root).path), "journal.json", file: file, line: line)
+        XCTAssertFalse(fm.fileExists(atPath: WallpaperCatalogFile.migrationRoot(in: root).path), "Migration/", file: file, line: line)
+        XCTAssertFalse(fm.fileExists(atPath: WallpaperCatalogFile.backupsRoot(in: root).path), "Backups/", file: file, line: line)
+        XCTAssertFalse(fm.fileExists(atPath: WallpaperCatalogFile.stagingRoot(in: root).path), "Staging/", file: file, line: line)
+        XCTAssertFalse(fm.fileExists(atPath: WallpaperCatalogFile.assetsRoot(in: root).path), "Catalog/Assets", file: file, line: line)
+    }
+
+    /// 1. Protected root, no authorization: blocked. 7. Zero writes.
+    func testProtectedRootWithoutAuthorizationBlocksMigrationAndWritesNothing() throws {
+        let root = try makeProtectedRoot()
+        let before = try snapshot(of: root)
+
+        XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(root))
+        XCTAssertFalse(LibraryMigration.isMigrationAuthorized(for: root))
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root))
+        XCTAssertThrowsError(try LibraryMigration.migrateIfNeeded(libraryRoot: root)) { error in
+            XCTAssertTrue(error is LibraryMigration.MigrationBlockedError)
+            XCTAssertEqual(error.localizedDescription, LibraryMigration.blockedDiagnostic)
+        }
+
+        assertNoMigrationArtifacts(at: root)
+        XCTAssertEqual(try snapshot(of: root), before, "a blocked run must not write anything")
+    }
+
+    /// 2. Protected root with a matching authorization: migration proceeds.
+    func testProtectedRootWithMatchingAuthorizationMigrates() throws {
+        let root = try makeProtectedRoot()
+        authorize(root)
+
+        XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(root))
+        XCTAssertFalse(LibraryMigration.isMigrationBlocked(for: root))
+        let summary = try LibraryMigration.migrateIfNeeded(libraryRoot: root)
+        XCTAssertEqual(summary.assetCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: WallpaperCatalogFile.catalogURL(in: root).path))
+        XCTAssertEqual(try LibraryMigration.loadJournal(from: root).phase, .complete)
+    }
+
+    /// Authorization is scoped to one exact root; naming a different path
+    /// authorizes nothing.
+    func testAuthorizationForAnotherRootDoesNotUnblockProtectedRoot() throws {
+        let root = try makeProtectedRoot()
+        authorize(FileManager.default.temporaryDirectory.appendingPathComponent("elsewhere"))
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root))
+        XCTAssertThrowsError(try LibraryMigration.migrateIfNeeded(libraryRoot: root))
+        assertNoMigrationArtifacts(at: root)
+
+        LibraryMigration.environmentProvider = { [Self.authorizationKey: ""] }
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root))
+    }
+
+    /// 3. Disposable root with explicit test configuration migrates without
+    /// any authorization: it is not a protected root.
+    func testDisposableRootMigratesWithoutAuthorization() throws {
+        let store = makeStore()
+        let vibe = try XCTUnwrap(store.create(name: "Disposable"))
+        try writePNG(to: store.allDayFolderURL(in: vibe).appendingPathComponent("a.png"))
+
+        XCTAssertFalse(LibraryMigration.isProtectedLibraryRoot(libraryRoot))
+        XCTAssertFalse(LibraryMigration.isMigrationBlocked(for: libraryRoot))
+        let summary = try LibraryMigration.migrateIfNeeded(libraryRoot: libraryRoot)
+        XCTAssertEqual(summary.assetCount, 1)
+        XCTAssertTrue(makeStore().usesCatalog)
+    }
+
+    /// 4. Running inside XCTest grants nothing: the host is a test host, the
+    /// real environment is ignored, and the protected root stays blocked.
+    func testXCTestHostCannotBypassGuardAccidentally() throws {
+        let root = try makeProtectedRoot()
+        XCTAssertTrue(LibraryMigration.isRunningInTestHost)
+        // The real process environment, whatever it holds, is not consulted
+        // once a provider is injected; and the default provider does not name
+        // a temp root either.
+        LibraryMigration.environmentProvider = { ProcessInfo.processInfo.environment }
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root))
+        XCTAssertThrowsError(try LibraryMigration.migrateIfNeeded(libraryRoot: root))
+        assertNoMigrationArtifacts(at: root)
+
+        // The real home-directory library is protected in this host too.
+        let real = LibraryMigration.realUserLibraryRoot()
+        XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(real))
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: real))
+        XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(LibraryMigration.defaultApplicationSupportLibraryRoot()))
+    }
+
+    /// 5. A stale catalog.json at a protected root is not adopted.
+    func testStaleCatalogAtProtectedRootIsNotAdoptedWithoutAuthorization() throws {
+        let root = try makeProtectedRoot()
+        let stale = WallpaperCatalog.readyEmpty()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(stale).write(to: WallpaperCatalogFile.catalogURL(in: root))
+        let before = try snapshot(of: root)
+
+        // The store resolves the protected root through the default-path
+        // route, exactly as an ordinary launch would.
+        let store = MoodStore(baseURL: nil, defaults: defaults)
+        XCTAssertFalse(store.usesCatalog)
+        XCTAssertNil(store.catalog)
+        XCTAssertThrowsError(try store.ensureCatalog()) { error in
+            XCTAssertTrue(error is LibraryMigration.MigrationBlockedError)
+        }
+        XCTAssertEqual(try snapshot(of: root), before)
+    }
+
+    /// 6. No catalog.json at a protected root does not trigger a fresh
+    /// catalog on import: the import lands on the legacy folder model.
+    func testMissingCatalogAtProtectedRootDoesNotStartFreshMigration() throws {
+        let root = try makeProtectedRoot()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: WallpaperCatalogFile.catalogURL(in: root).path))
+        XCTAssertTrue(LibraryMigration.needsMigration(libraryRoot: root))
+
+        XCTAssertThrowsError(try LibraryMigration.migrateIfNeeded(libraryRoot: root))
+        let store = MoodStore(baseURL: nil, defaults: defaults)
+        XCTAssertThrowsError(try store.ensureCatalog())
+        assertNoMigrationArtifacts(at: root)
+    }
+
+    /// Imports on a blocked root use the legacy folder path instead of
+    /// failing, so an unauthorized launch still works as before.
+    func testImportOnBlockedRootUsesLegacyFoldersAndNeverCreatesCatalog() async throws {
+        // A disposable root marked protected exercises the real import path.
+        let root = libraryRoot!
+        LibraryMigration.testLiveLibraryRoot = root
+        let store = makeStore()
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root))
+        let vibe = try XCTUnwrap(store.create(name: "Legacy"))
+        let source = root.appendingPathComponent("source.png")
+        try writePNG(to: source)
+
+        let summary = try await store.importAllDayWallpapers(from: [source], in: vibe)
+        XCTAssertEqual(summary.importedCount, 1)
+        XCTAssertFalse(store.usesCatalog)
+        XCTAssertEqual(store.allDayWallpapers(in: vibe).count, 1)
+        XCTAssertTrue(try XCTUnwrap(store.allDayWallpapers(in: vibe).first).path.contains("/Moods/\(vibe.id)/AllDay/"))
+        assertNoMigrationArtifacts(at: root)
+        XCTAssertThrowsError(try store.deleteWallpaperFromMoodpaper(source))
+    }
+
+    /// 8. Authorization never lands in UserDefaults and does not outlive the
+    /// injected environment.
+    func testAuthorizationIsNotPersistedAfterAuthorizedRun() throws {
+        let root = try makeProtectedRoot()
+        authorize(root)
+        _ = try LibraryMigration.migrateIfNeeded(libraryRoot: root)
+        let store = MoodStore(baseURL: root, defaults: defaults)
+        XCTAssertTrue(store.usesCatalog)
+
+        XCTAssertNil(defaults.object(forKey: Self.authorizationKey))
+        XCTAssertNil(UserDefaults.standard.object(forKey: Self.authorizationKey))
+        let persisted = defaults.persistentDomain(forName: suiteName) ?? [:]
+        XCTAssertFalse(persisted.keys.contains { $0.localizedCaseInsensitiveContains("authoriz") })
+
+        LibraryMigration.environmentProvider = { [:] }
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root))
+        // Only a second migration would need the authorization again; the
+        // already-published catalog stays unreadable to an unauthorized
+        // launch on the protected root.
+        XCTAssertNil(MoodStore(baseURL: root, defaults: defaults).catalog)
+    }
+
+    /// Negative test against the user's actual library root. Read-only by
+    /// construction: every call here is one the guard must refuse before its
+    /// first write, and the test-host rule keeps `MoodStore` from loading the
+    /// live root at all. Run it in an unsandboxed host (ENABLE_APP_SANDBOX=NO)
+    /// so the default Application Support path resolves to the real one.
+    func testRealUserLibraryRootIsBlockedWithoutAuthorization() throws {
+        LibraryMigration.testLiveLibraryRoot = nil
+        LibraryMigration.environmentProvider = { ProcessInfo.processInfo.environment }
+        let real = LibraryMigration.realUserLibraryRoot()
+        let processDefault = LibraryMigration.defaultApplicationSupportLibraryRoot()
+        XCTAssertNil(
+            ProcessInfo.processInfo.environment[Self.authorizationKey],
+            "this negative test must run without any authorization in the environment"
+        )
+
+        XCTAssertTrue(real.path.hasSuffix("/Library/Application Support/Moodpaper"))
+        XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(real))
+        XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(processDefault))
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: real))
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: processDefault))
+        XCTAssertThrowsError(try LibraryMigration.migrateIfNeeded(libraryRoot: real)) { error in
+            XCTAssertTrue(error is LibraryMigration.MigrationBlockedError)
+        }
+
+        let store = MoodStore(baseURL: nil, defaults: defaults)
+        XCTAssertEqual(store.storageRootURL.standardizedFileURL.path, processDefault.standardizedFileURL.path)
+        XCTAssertFalse(store.usesCatalog)
+        XCTAssertNil(store.catalog)
+        XCTAssertThrowsError(try store.ensureCatalog()) { error in
+            XCTAssertTrue(error is LibraryMigration.MigrationBlockedError)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: WallpaperCatalogFile.catalogURL(in: real).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: WallpaperCatalogFile.migrationRoot(in: real).path))
     }
 }

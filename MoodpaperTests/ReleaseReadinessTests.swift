@@ -342,6 +342,31 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(wallpapers.contains("store.libraryItems(in: mood)"))
     }
 
+    /// The authorization check must run before the first migration write,
+    /// and nothing may consult UserDefaults for it.
+    func testCatalogMigrationGuardRunsBeforeAnyWriteAndIsNotPersisted() throws {
+        let migration = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),
+            encoding: .utf8
+        )
+        let migrateStart = try XCTUnwrap(migration.range(of: "static func migrateIfNeeded(libraryRoot: URL)"))
+        let body = migration[migrateStart.upperBound...]
+        let guardIndex = try XCTUnwrap(body.range(of: "isMigrationBlocked(for: libraryRoot)")).lowerBound
+        let firstWrite = try XCTUnwrap(body.range(of: "createDirectory(")).lowerBound
+        XCTAssertLessThan(guardIndex, firstWrite, "guard must precede the first filesystem write")
+        XCTAssertTrue(migration.contains("MOODPAPER_AUTHORIZE_CATALOG_MIGRATION"))
+        XCTAssertTrue(migration.contains("Catalog migration blocked: explicit authorization required for real user library"))
+        XCTAssertFalse(migration.contains("UserDefaults."), "authorization must never touch UserDefaults")
+        XCTAssertFalse(migration.contains("UserDefaults("), "authorization must never touch UserDefaults")
+        XCTAssertFalse(migration.contains("ENABLE_APP_SANDBOX"))
+
+        let store = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodStore.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(store.contains("authorizationEnvironmentKey"), "MoodStore must not read or store the authorization itself")
+    }
+
     func testCatalogV2MigrationEngineExistsWithoutRetiringLegacyFolders() throws {
         let migration = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),

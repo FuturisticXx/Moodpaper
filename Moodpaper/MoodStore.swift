@@ -108,7 +108,7 @@ final class MoodStore: ObservableObject {
         self.defaults = defaults
         let base = baseURL ?? LibraryMigration.resolvedLiveLibraryRoot()
         self.moodsRootURL = base.appendingPathComponent("Moods")
-        if LibraryMigration.mustNotPublishCatalog(to: base) {
+        if LibraryMigration.testHostMustNotLoadLibrary(at: base) {
             return
         }
         load()
@@ -137,7 +137,7 @@ final class MoodStore: ObservableObject {
 
     /// Re-read the catalog after files changed underneath the store.
     func reload() {
-        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+        if LibraryMigration.testHostMustNotLoadLibrary(at: storageRootURL) {
             return
         }
         load()
@@ -410,7 +410,7 @@ final class MoodStore: ObservableObject {
         to slot: TimeSlot,
         in mood: Mood
     ) async throws -> WallpaperImportSummary {
-        try ensureCatalog()
+        try ensureCatalogUnlessMigrationBlocked()
         return try await importItems(
             from: urls,
             to: folderURL(for: slot, in: mood),
@@ -424,7 +424,7 @@ final class MoodStore: ObservableObject {
     /// Day pool. Folder contents are discovered recursively, non-images are
     /// ignored, and individual decode failures don't discard successful work.
     func importAllDayWallpapers(from urls: [URL], in mood: Mood) async throws -> WallpaperImportSummary {
-        try ensureCatalog()
+        try ensureCatalogUnlessMigrationBlocked()
         return try await importItems(
             from: urls,
             to: allDayFolderURL(in: mood),
@@ -813,7 +813,7 @@ final class MoodStore: ObservableObject {
     }
 
     private func load() {
-        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+        if LibraryMigration.testHostMustNotLoadLibrary(at: storageRootURL) {
             return
         }
         try? fileManager.createDirectory(at: moodsRootURL, withIntermediateDirectories: true)
@@ -876,9 +876,14 @@ final class MoodStore: ObservableObject {
         return nil
     }
 
+    /// Adopts an existing catalog or migrates the legacy folders into one.
+    /// On a protected root without explicit authorization neither happens:
+    /// a stale catalog.json is ignored and the store stays on the legacy
+    /// Moods model.
     private func adoptCatalogIfNeeded() {
-        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
+        if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
             catalog = nil
+            print("[MoodStore] \(LibraryMigration.blockedDiagnostic)")
             return
         }
         if let loaded = try? LibraryMigration.loadCatalog(from: storageRootURL), loaded.isReady {
@@ -886,10 +891,6 @@ final class MoodStore: ObservableObject {
             return
         }
         guard LibraryMigration.needsMigration(libraryRoot: storageRootURL) else { return }
-        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
-            catalog = nil
-            return
-        }
         do {
             _ = try LibraryMigration.migrateIfNeeded(libraryRoot: storageRootURL)
             catalog = try LibraryMigration.loadCatalog(from: storageRootURL)
@@ -899,10 +900,18 @@ final class MoodStore: ObservableObject {
         }
     }
 
+    /// Imports keep working on the legacy folder model when migration is
+    /// blocked; catalog-only operations go through `ensureCatalog` and fail
+    /// closed instead.
+    private func ensureCatalogUnlessMigrationBlocked() throws {
+        if LibraryMigration.isMigrationBlocked(for: storageRootURL) { return }
+        try ensureCatalog()
+    }
+
     func ensureCatalog() throws {
         if usesCatalog { return }
-        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
-            throw LibraryMigration.TestHostBlockedError()
+        if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
+            throw LibraryMigration.MigrationBlockedError()
         }
         if LibraryMigration.needsMigration(libraryRoot: storageRootURL) {
             _ = try LibraryMigration.migrateIfNeeded(libraryRoot: storageRootURL)
@@ -921,8 +930,8 @@ final class MoodStore: ObservableObject {
 
     private func persistCatalog() throws {
         guard let catalog else { return }
-        if LibraryMigration.mustNotPublishCatalog(to: storageRootURL) {
-            throw LibraryMigration.TestHostBlockedError()
+        if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
+            throw LibraryMigration.MigrationBlockedError()
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
