@@ -18,6 +18,7 @@ struct UserLibraryView: View {
     @State private var previewItem: WallpaperLibraryItem?
     @State private var useDuringItems: [WallpaperLibraryItem] = []
     @State private var isDropTarget = false
+    @State private var pendingMoodpaperDelete: [WallpaperLibraryItem] = []
     @AppStorage(HorizonScheduleDefaults.timeSlotModeKey) private var timeSlotMode = "Detailed"
 
     private var filteredItems: [WallpaperLibraryItem] {
@@ -76,11 +77,27 @@ struct UserLibraryView: View {
                 onUseNow: { useNow([item]) },
                 onPlayThroughoutTheDay: { playThroughoutTheDay([item]) },
                 onUseDuring: { slot in assign([item], to: .during(slot)) },
-                onDelete: {
-                    delete([item])
+                onRemoveFromVibe: {
+                    removeFromVibe([item])
+                    previewItem = nil
+                },
+                onDeleteFromMoodpaper: {
+                    pendingMoodpaperDelete = [item]
                     previewItem = nil
                 }
             )
+        }
+        .alert("Delete from Moodpaper?", isPresented: Binding(
+            get: { !pendingMoodpaperDelete.isEmpty },
+            set: { if !$0 { pendingMoodpaperDelete = [] } }
+        )) {
+            Button("Delete from Moodpaper", role: .destructive) {
+                deleteFromMoodpaper(pendingMoodpaperDelete)
+                pendingMoodpaperDelete = []
+            }
+            Button("Cancel", role: .cancel) { pendingMoodpaperDelete = [] }
+        } message: {
+            Text("This removes the photo from every Vibe and deletes the stored file. Remove from Vibe keeps the photo in Moodpaper.")
         }
         .sheet(isPresented: Binding(
             get: { !useDuringItems.isEmpty },
@@ -157,7 +174,9 @@ struct UserLibraryView: View {
                 .buttonStyle(.bordered)
             Button("Use During…") { useDuringItems = selectedItems }
                 .buttonStyle(.bordered)
-            Button("Delete", role: .destructive) { delete(selectedItems) }
+            Button("Remove from Vibe") { removeFromVibe(selectedItems) }
+                .buttonStyle(.bordered)
+            Button("Delete from Moodpaper", role: .destructive) { pendingMoodpaperDelete = selectedItems }
                 .buttonStyle(.bordered)
             Button("Clear") { selectedURLs.removeAll() }
                 .buttonStyle(.plain)
@@ -241,12 +260,16 @@ struct UserLibraryView: View {
                             }
                         }
                         Divider()
-                        Button("Delete", role: .destructive) { delete([item]) }
+                        Button("Remove from Vibe") { removeFromVibe([item]) }
+                        Button("Delete from Moodpaper", role: .destructive) {
+                            pendingMoodpaperDelete = [item]
+                        }
                     }
                     .accessibilityAction(named: "Preview") { previewItem = item }
                     .accessibilityAction(named: "Use Now") { useNow([item]) }
                     .accessibilityAction(named: "Play Throughout the Day") { playThroughoutTheDay([item]) }
-                    .accessibilityAction(named: "Delete") { delete([item]) }
+                    .accessibilityAction(named: "Remove from Vibe") { removeFromVibe([item]) }
+                    .accessibilityAction(named: "Delete from Moodpaper") { pendingMoodpaperDelete = [item] }
                 }
             }
             .padding(.horizontal, HorizonSpacing.xxxl)
@@ -366,11 +389,23 @@ struct UserLibraryView: View {
         }
     }
 
-    private func delete(_ items: [WallpaperLibraryItem]) {
+    private func removeFromVibe(_ items: [WallpaperLibraryItem]) {
         guard let mood = store.activeMood else { return }
         do {
             for item in items {
                 try store.removeWallpaper(item.url, from: mood)
+                selectedURLs.remove(item.url)
+            }
+            importStatus = nil
+        } catch {
+            importStatus = ImportStatus(deleteFailure: error)
+        }
+    }
+
+    private func deleteFromMoodpaper(_ items: [WallpaperLibraryItem]) {
+        do {
+            for item in items {
+                try store.deleteWallpaperFromMoodpaper(item.url)
                 selectedURLs.remove(item.url)
             }
             importStatus = nil
@@ -507,9 +542,17 @@ private struct WallpaperGridCell: View {
         .onHover { isHovered = $0 }
         .onAppear { loadImage() }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(item.url.deletingPathExtension().lastPathComponent), \(item.placement.badgeTitle)")
+        .accessibilityLabel(accessibilityLabel(for: item))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Selects this wallpaper. Preview and Use Now are in the context menu.")
+    }
+
+    private func accessibilityLabel(for item: WallpaperLibraryItem) -> String {
+        let name = item.url.deletingPathExtension().lastPathComponent
+        if item.vibeIDs.count > 1 {
+            return "\(name), \(item.placement.badgeTitle), in \(item.vibeIDs.count) Vibes"
+        }
+        return "\(name), \(item.placement.badgeTitle)"
     }
 
     private func loadImage() {
@@ -539,7 +582,8 @@ private struct WallpaperPreviewSheet: View {
     let onUseNow: () -> Void
     let onPlayThroughoutTheDay: () -> Void
     let onUseDuring: (TimeSlot) -> Void
-    let onDelete: () -> Void
+    let onRemoveFromVibe: () -> Void
+    let onDeleteFromMoodpaper: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage?
 
@@ -583,7 +627,8 @@ private struct WallpaperPreviewSheet: View {
                     }
                 }
                 Spacer()
-                Button("Delete", role: .destructive, action: onDelete)
+                Button("Remove from Vibe", action: onRemoveFromVibe)
+                Button("Delete from Moodpaper", role: .destructive, action: onDeleteFromMoodpaper)
             }
             .padding(20)
         }

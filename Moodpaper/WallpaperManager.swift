@@ -1198,7 +1198,8 @@ class WallpaperManager: ObservableObject {
     private func wallpaperURL(for identifier: String) -> URL? {
         if identifier.hasPrefix("/") {
             let fileURL = URL(fileURLWithPath: identifier)
-            return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
+            if FileManager.default.fileExists(atPath: fileURL.path) { return fileURL }
+            return MoodStore.shared.resolveCanonicalURL(forPlaybackIdentifier: identifier)
         }
         return bundleURL(for: identifier)
     }

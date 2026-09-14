@@ -160,6 +160,9 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(source.contains("Use Now"))
         XCTAssertTrue(source.contains("Preview"))
         XCTAssertTrue(source.contains("importAllDayWallpapers"))
+        XCTAssertTrue(source.contains("Remove from Vibe"))
+        XCTAssertTrue(source.contains("Delete from Moodpaper"))
+        XCTAssertTrue(source.contains("This removes the photo from every Vibe and deletes the stored file"))
         XCTAssertFalse(source.contains("Text(\"All Day\")"))
         XCTAssertFalse(source.contains("Using All Day"))
         XCTAssertFalse(source.contains("onApply"))
@@ -337,5 +340,31 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(wallpapers.contains("Play Throughout the Day"))
         XCTAssertTrue(wallpapers.contains("Use During"))
         XCTAssertTrue(wallpapers.contains("store.libraryItems(in: mood)"))
+    }
+
+    func testCatalogV2MigrationEngineExistsWithoutRetiringLegacyFolders() throws {
+        let migration = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(migration.contains("static let schemaVersion = WallpaperCatalog.schemaVersion"))
+        XCTAssertTrue(migration.contains("static let migrationVersion = WallpaperCatalog.migrationVersion"))
+        XCTAssertTrue(migration.contains("journal.json"))
+        XCTAssertTrue(migration.contains("never delete Moods"))
+        XCTAssertFalse(migration.contains("removeItem(at: moods"))
+
+        let catalog = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperCatalog.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(catalog.contains("static let schemaVersion = 2"))
+        XCTAssertTrue(catalog.contains("static let migrationVersion = 1"))
+
+        let manager = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperManager.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(manager.contains("resolveCanonicalURL(forPlaybackIdentifier"))
+        XCTAssertTrue(manager.contains("MoodStore.shared.effectiveWallpapers(for: timeSlot"))
     }
 }

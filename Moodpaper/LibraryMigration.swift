@@ -1,0 +1,438 @@
+import Foundation
+
+/// Catalog v2 migrator. Folder-owned wallpaper copies become first-class
+/// assets with memberships. Legacy Moods folders, backups, and the journal
+/// stay on disk until a later approved cleanup — this type never deletes them
+/// after a successful migrate.
+enum LibraryMigration {
+    static let schemaVersion = WallpaperCatalog.schemaVersion
+    static let migrationVersion = WallpaperCatalog.migrationVersion
+
+    private static let supportedImageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "heic", "heif", "tiff", "bmp"
+    ]
+
+    /// Test-only: stop after this journal phase so resume can be exercised.
+    static var testInterruptAfterPhase: JournalPhase?
+    /// Test-only: mutate staging after copy and before validate.
+    static var testCorruptStagingBeforeValidation = false
+
+    enum JournalPhase: String, Codable {
+        case started
+        case backupComplete
+        case assetsCopying
+        case catalogStaged
+        case validated
+        case complete
+        case aborted
+    }
+
+    struct Journal: Codable, Equatable {
+        var schemaVersion: Int
+        var migrationVersion: Int
+        var phase: JournalPhase
+        var runID: String
+        var backupFolderName: String?
+        var sourcePathToAssetID: [String: String]
+        var lastError: String?
+        var startedAt: Date
+        var updatedAt: Date
+    }
+
+    struct Summary: Equatable {
+        var assetCount: Int
+        var membershipCount: Int
+        var alreadyComplete: Bool
+        var resumed: Bool
+    }
+
+    struct ValidationError: LocalizedError {
+        var errorDescription: String?
+    }
+
+    struct InterruptedError: LocalizedError {
+        var phase: JournalPhase
+        var errorDescription: String? { "Migration interrupted after \(phase.rawValue)" }
+    }
+
+    static func needsMigration(libraryRoot: URL) -> Bool {
+        if let catalog = try? loadCatalog(from: libraryRoot), catalog.isReady {
+            return false
+        }
+        return !legacyImageFiles(in: libraryRoot).isEmpty
+    }
+
+    @discardableResult
+    static func migrateIfNeeded(libraryRoot: URL) throws -> Summary {
+        if let catalog = try? loadCatalog(from: libraryRoot), catalog.isReady {
+            return Summary(
+                assetCount: catalog.assets.count,
+                membershipCount: catalog.memberships.count,
+                alreadyComplete: true,
+                resumed: false
+            )
+        }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: WallpaperCatalogFile.migrationRoot(in: libraryRoot),
+            withIntermediateDirectories: true
+        )
+
+        var journal = (try? loadJournal(from: libraryRoot)) ?? Journal(
+            schemaVersion: schemaVersion,
+            migrationVersion: migrationVersion,
+            phase: .started,
+            runID: UUID().uuidString.lowercased(),
+            backupFolderName: nil,
+            sourcePathToAssetID: [:],
+            lastError: nil,
+            startedAt: Date(),
+            updatedAt: Date()
+        )
+        let resumed = journal.phase != .started || journal.backupFolderName != nil
+        try checkpoint(&journal, phase: .started, libraryRoot: libraryRoot)
+
+        do {
+            if journal.phase == .started || journal.backupFolderName == nil {
+                journal.backupFolderName = try writeBackup(libraryRoot: libraryRoot, runID: journal.runID)
+                try checkpoint(&journal, phase: .backupComplete, libraryRoot: libraryRoot)
+            }
+
+            try checkpoint(&journal, phase: .assetsCopying, libraryRoot: libraryRoot)
+            let stagingRoot = WallpaperCatalogFile.stagingRoot(in: libraryRoot)
+            try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+            let stagingAssets = stagingRoot.appendingPathComponent(
+                WallpaperCatalogFile.assetsDirectoryName,
+                isDirectory: true
+            )
+            try fileManager.createDirectory(at: stagingAssets, withIntermediateDirectories: true)
+
+            let catalog = try buildCatalog(
+                libraryRoot: libraryRoot,
+                stagingAssets: stagingAssets,
+                journal: &journal
+            )
+            try checkpoint(&journal, phase: .catalogStaged, libraryRoot: libraryRoot)
+
+            if testCorruptStagingBeforeValidation {
+                testCorruptStagingBeforeValidation = false
+                let contents = try fileManager.contentsOfDirectory(
+                    at: stagingAssets,
+                    includingPropertiesForKeys: nil
+                )
+                if let first = contents.first {
+                    try Data("corrupt".utf8).write(to: first)
+                }
+            }
+
+            try validate(catalog, libraryRoot: libraryRoot, assetsRoot: stagingAssets)
+            try checkpoint(&journal, phase: .validated, libraryRoot: libraryRoot)
+
+            try publishCatalog(catalog, from: stagingRoot, libraryRoot: libraryRoot)
+            journal.lastError = nil
+            try checkpoint(&journal, phase: .complete, libraryRoot: libraryRoot)
+            return Summary(
+                assetCount: catalog.assets.count,
+                membershipCount: catalog.memberships.count,
+                alreadyComplete: false,
+                resumed: resumed && journal.sourcePathToAssetID.isEmpty == false
+            )
+        } catch let interrupt as InterruptedError {
+            throw interrupt
+        } catch {
+            journal.lastError = error.localizedDescription
+            try? checkpoint(&journal, phase: .aborted, libraryRoot: libraryRoot)
+            // Leave any incomplete catalog.json unpublished; never delete Moods/.
+            throw error
+        }
+    }
+
+    static func loadCatalog(from libraryRoot: URL) throws -> WallpaperCatalog {
+        let data = try Data(contentsOf: WallpaperCatalogFile.catalogURL(in: libraryRoot))
+        return try catalogDecoder.decode(WallpaperCatalog.self, from: data)
+    }
+
+    static func loadJournal(from libraryRoot: URL) throws -> Journal {
+        let data = try Data(contentsOf: WallpaperCatalogFile.journalURL(in: libraryRoot))
+        return try catalogDecoder.decode(Journal.self, from: data)
+    }
+
+    static func canonicalURL(for asset: WallpaperAsset, libraryRoot: URL) -> URL {
+        libraryRoot.appendingPathComponent(asset.relativePath)
+    }
+
+    // MARK: - Internals
+
+    private static func checkpoint(
+        _ journal: inout Journal,
+        phase: JournalPhase,
+        libraryRoot: URL
+    ) throws {
+        journal.phase = phase
+        journal.updatedAt = Date()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(journal)
+        try data.write(to: WallpaperCatalogFile.journalURL(in: libraryRoot), options: .atomic)
+        if let interrupt = testInterruptAfterPhase, interrupt == phase, phase != .complete {
+            testInterruptAfterPhase = nil
+            throw InterruptedError(phase: phase)
+        }
+    }
+
+    private static func writeBackup(libraryRoot: URL, runID: String) throws -> String {
+        let backups = WallpaperCatalogFile.backupsRoot(in: libraryRoot)
+        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
+        let name = "phase-6a-v\(migrationVersion)-\(runID)"
+        let destination = backups.appendingPathComponent(name, isDirectory: true)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            return name
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let moods = libraryRoot.appendingPathComponent("Moods", isDirectory: true)
+        if FileManager.default.fileExists(atPath: moods.path) {
+            try FileManager.default.copyItem(
+                at: moods,
+                to: destination.appendingPathComponent("Moods", isDirectory: true)
+            )
+        }
+        let catalog = WallpaperCatalogFile.catalogURL(in: libraryRoot)
+        if FileManager.default.fileExists(atPath: catalog.path) {
+            try FileManager.default.copyItem(
+                at: catalog,
+                to: destination.appendingPathComponent(WallpaperCatalogFile.catalogFileName)
+            )
+        }
+        return name
+    }
+
+    private static func buildCatalog(
+        libraryRoot: URL,
+        stagingAssets: URL,
+        journal: inout Journal
+    ) throws -> WallpaperCatalog {
+        var catalog = WallpaperCatalog.readyEmpty()
+        var identityIndex: [WallpaperAssetIdentity: String] = [:]
+        let files = legacyImageFiles(in: libraryRoot)
+
+        for file in files {
+            let sourcePath = file.url.standardizedFileURL.path
+            let hash = try WallpaperIdentity.sha256Hex(of: file.url)
+            let byteCount = try file.url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            let metadata = WallpaperIdentity.imageMetadata(at: file.url)
+            let identity: WallpaperAssetIdentity? = {
+                guard let metadata else { return nil }
+                return WallpaperAssetIdentity(
+                    contentHash: hash,
+                    byteCount: byteCount,
+                    pixelWidth: metadata.width,
+                    pixelHeight: metadata.height
+                )
+            }()
+
+            let assetID: String
+            if let identity, let existingID = identityIndex[identity] {
+                assetID = existingID
+            } else if let existingID = journal.sourcePathToAssetID[sourcePath] {
+                assetID = existingID
+            } else {
+                assetID = UUID().uuidString.lowercased()
+            }
+
+            if let identity {
+                identityIndex[identity] = assetID
+            }
+
+            let ext = file.url.pathExtension.isEmpty ? "jpg" : file.url.pathExtension.lowercased()
+            let relative = "\(WallpaperCatalogFile.assetsFolderName)/\(WallpaperCatalogFile.assetsDirectoryName)/\(assetID).\(ext)"
+            let destination = stagingAssets.appendingPathComponent("\(assetID).\(ext)")
+
+            if var existing = catalog.asset(id: assetID) {
+                if !existing.legacySourcePaths.contains(sourcePath) {
+                    existing.legacySourcePaths.append(sourcePath)
+                }
+                catalog.upsert(existing)
+            } else {
+                catalog.upsert(
+                    WallpaperAsset(
+                        id: assetID,
+                        originalFilename: file.url.lastPathComponent,
+                        relativePath: relative,
+                        contentHash: hash,
+                        byteCount: byteCount,
+                        pixelWidth: metadata?.width,
+                        pixelHeight: metadata?.height,
+                        uti: metadata?.uti,
+                        createdAt: Date(),
+                        legacySourcePaths: [sourcePath]
+                    )
+                )
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: file.url, to: destination)
+            }
+
+            journal.sourcePathToAssetID[sourcePath] = assetID
+            try checkpoint(&journal, phase: .assetsCopying, libraryRoot: libraryRoot)
+
+            var membership = catalog.memberships.first {
+                $0.assetID == assetID && $0.moodID == file.moodID
+            } ?? WallpaperMembership(
+                assetID: assetID,
+                moodID: file.moodID,
+                throughoutTheDay: false,
+                slotIDs: []
+            )
+            if file.folderName == "AllDay" {
+                membership.throughoutTheDay = true
+            } else if TimeSlot(rawValue: file.folderName) != nil {
+                if !membership.slotIDs.contains(file.folderName) {
+                    membership.slotIDs.append(file.folderName)
+                    membership.slotIDs.sort()
+                }
+            }
+            catalog.replaceMembership(membership)
+        }
+
+        return catalog
+    }
+
+    private static func validate(
+        _ catalog: WallpaperCatalog,
+        libraryRoot: URL,
+        assetsRoot: URL
+    ) throws {
+        let legacy = legacyImageFiles(in: libraryRoot)
+        let accounted = Set(catalog.assets.flatMap(\.legacySourcePaths))
+        for file in legacy {
+            let path = file.url.standardizedFileURL.path
+            guard accounted.contains(path) else {
+                throw ValidationError(errorDescription: "Legacy file was not catalogued: \(path)")
+            }
+        }
+
+        var seenIdentity: [WallpaperAssetIdentity: String] = [:]
+        for asset in catalog.assets {
+            let url = assetsRoot.appendingPathComponent((asset.relativePath as NSString).lastPathComponent)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw ValidationError(errorDescription: "Canonical file missing for \(asset.id)")
+            }
+            let hash = try WallpaperIdentity.sha256Hex(of: url)
+            guard hash == asset.contentHash else {
+                throw ValidationError(errorDescription: "Canonical hash mismatch for \(asset.id)")
+            }
+            if let identity = asset.identityKey {
+                if let other = seenIdentity[identity], other != asset.id {
+                    throw ValidationError(errorDescription: "Duplicate identity published as distinct assets")
+                }
+                seenIdentity[identity] = asset.id
+            }
+        }
+
+        let moodIDs = Set((try? decodeMoodIDs(in: libraryRoot)) ?? [])
+        for membership in catalog.memberships {
+            guard catalog.asset(id: membership.assetID) != nil else {
+                throw ValidationError(errorDescription: "Membership references missing asset")
+            }
+            if !moodIDs.isEmpty {
+                guard moodIDs.contains(membership.moodID) else {
+                    throw ValidationError(errorDescription: "Membership references missing Vibe")
+                }
+            }
+        }
+    }
+
+    private static func publishCatalog(
+        _ catalog: WallpaperCatalog,
+        from stagingRoot: URL,
+        libraryRoot: URL
+    ) throws {
+        let fileManager = FileManager.default
+        let liveAssets = WallpaperCatalogFile.assetsRoot(in: libraryRoot)
+        try fileManager.createDirectory(
+            at: liveAssets.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let stagingAssets = stagingRoot.appendingPathComponent(
+            WallpaperCatalogFile.assetsDirectoryName,
+            isDirectory: true
+        )
+        if fileManager.fileExists(atPath: liveAssets.path) {
+            // Resume: fill any missing canonical files, never replace validated ones.
+            let staged = try fileManager.contentsOfDirectory(at: stagingAssets, includingPropertiesForKeys: nil)
+            for file in staged {
+                let dest = liveAssets.appendingPathComponent(file.lastPathComponent)
+                if !fileManager.fileExists(atPath: dest.path) {
+                    try fileManager.copyItem(at: file, to: dest)
+                }
+            }
+        } else {
+            try fileManager.copyItem(at: stagingAssets, to: liveAssets)
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(catalog).write(
+            to: WallpaperCatalogFile.catalogURL(in: libraryRoot),
+            options: .atomic
+        )
+    }
+
+    private static var catalogDecoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    static func legacyImageFiles(in libraryRoot: URL) -> [(url: URL, moodID: String, folderName: String)] {
+        let moodsRoot = libraryRoot.appendingPathComponent("Moods", isDirectory: true)
+        guard let moodFolders = try? FileManager.default.contentsOfDirectory(
+            at: moodsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var files: [(url: URL, moodID: String, folderName: String)] = []
+        for moodFolder in moodFolders {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: moodFolder.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  moodFolder.lastPathComponent != "moods.json" else { continue }
+            let moodID = moodFolder.lastPathComponent
+            guard let children = try? FileManager.default.contentsOfDirectory(
+                at: moodFolder,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for folder in children {
+                var folderIsDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &folderIsDirectory),
+                      folderIsDirectory.boolValue else { continue }
+                let folderName = folder.lastPathComponent
+                guard folderName == "AllDay" || TimeSlot(rawValue: folderName) != nil else {
+                    continue
+                }
+                let images = (try? FileManager.default.contentsOfDirectory(
+                    at: folder,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )) ?? []
+                for image in images where supportedImageExtensions.contains(image.pathExtension.lowercased()) {
+                    files.append((image, moodID, folderName))
+                }
+            }
+        }
+        return files.sorted { $0.url.path < $1.url.path }
+    }
+
+    private static func decodeMoodIDs(in libraryRoot: URL) throws -> [String] {
+        let url = libraryRoot.appendingPathComponent("Moods").appendingPathComponent("moods.json")
+        let data = try Data(contentsOf: url)
+        let moods = try JSONDecoder().decode([Mood].self, from: data)
+        return moods.map(\.id)
+    }
+}

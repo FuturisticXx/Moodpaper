@@ -9,10 +9,9 @@ internal import Combine
 // (for example "Work Week" or "Cozy Weekend"), fills each time slot with
 // their own images, and switches the whole desktop personality in one click.
 //
-// Assignments are the filesystem, not a stored list: the images living in
-// Moodpaper/Moods/<moodID>/<slotID>/ ARE the assignment for that slot.
-// Copy-on-import (the established UserWallpaperManager pattern) means moved
-// or deleted source files can never leave a Mood pointing at nothing.
+// Assignments are Catalog v2 memberships once migrated (one canonical file,
+// many Vibes). Until migration, legacy folder copies under
+// Moodpaper/Moods/<moodID>/<slotID>/ remain the assignment.
 struct Mood: Codable, Identifiable, Equatable {
     let id: String
     var name: String
@@ -57,6 +56,9 @@ enum WallpaperPlacement: Equatable, Hashable {
 struct WallpaperLibraryItem: Identifiable, Hashable {
     let url: URL
     let placement: WallpaperPlacement
+    var assetID: String? = nil
+    /// Multi-Vibe membership when Catalog v2 is the source of truth.
+    var vibeIDs: [String] = []
     var id: URL { url }
 }
 
@@ -65,12 +67,11 @@ struct WallpaperLibraryItem: Identifiable, Hashable {
 // Owns the Mood catalog and its files.
 //
 // Persistence:
-// - Metadata (the mood list) lives in moods.json inside the Moods folder,
-//   so the catalog travels with the image files it describes.
-// - The active mood ID lives in UserDefaults ("moods.activeID"), following
-//   the app's one-direction flow: UI writes defaults, the engine reads them.
-// - Wallpaper files live under Application Support at
-//   Moodpaper/Moods/<moodID>/<slotID>/ .
+// - Vibe metadata lives in moods.json inside the Moods folder.
+// - Catalog v2 (catalog.json + Catalog/Assets) is the source of truth for
+//   wallpaper identity, memberships, and time-slot assignments once migrated.
+// - Legacy Moods/<moodID>/<slotID>/ folders remain until a later cleanup.
+// - The active mood ID lives in UserDefaults ("moods.activeID").
 @MainActor
 final class MoodStore: ObservableObject {
     static let shared = MoodStore()
@@ -84,6 +85,8 @@ final class MoodStore: ObservableObject {
 
     @Published private(set) var moods: [Mood] = []
     @Published private(set) var activeMoodID: String? = nil
+    /// Catalog v2 when migration (or first catalog-backed import) has completed.
+    private(set) var catalog: WallpaperCatalog?
 
     /// Fired whenever the active mood actually changes (activate, or the
     /// fallback after deleting the active mood). The engine subscribes so a
@@ -107,9 +110,12 @@ final class MoodStore: ObservableObject {
             .appendingPathComponent("Moodpaper")
         self.moodsRootURL = base.appendingPathComponent("Moods")
         load()
+        adoptCatalogIfNeeded()
         migrateVibeCadencesIfNeeded()
         restoreActiveMoodIfNeeded()
     }
+
+    var usesCatalog: Bool { catalog?.isReady == true }
 
     // MARK: - Read helpers
 
@@ -130,6 +136,7 @@ final class MoodStore: ObservableObject {
     /// Re-read the catalog after files changed underneath the store.
     func reload() {
         load()
+        adoptCatalogIfNeeded()
         migrateVibeCadencesIfNeeded()
         restoreActiveMoodIfNeeded()
     }
@@ -182,6 +189,9 @@ final class MoodStore: ObservableObject {
     /// The images assigned to one slot of a mood, sorted by filename so
     /// ordering is stable across launches.
     func wallpapers(for slot: TimeSlot, in mood: Mood) -> [URL] {
+        if usesCatalog {
+            return catalogURLs(in: mood) { $0.includes(slot: slot) }
+        }
         let folder = moodsRootURL
             .appendingPathComponent(mood.id)
             .appendingPathComponent(slot.rawValue)
@@ -189,6 +199,9 @@ final class MoodStore: ObservableObject {
     }
 
     func allDayWallpapers(in mood: Mood) -> [URL] {
+        if usesCatalog {
+            return catalogURLs(in: mood) { $0.throughoutTheDay }
+        }
         let folder = moodsRootURL
             .appendingPathComponent(mood.id)
             .appendingPathComponent(Self.allDayFolderName)
@@ -219,7 +232,10 @@ final class MoodStore: ObservableObject {
     }
 
     func totalWallpaperCount(in mood: Mood) -> Int {
-        allDayWallpapers(in: mood).count
+        if usesCatalog {
+            return Set((catalog?.memberships(forMoodID: mood.id) ?? []).map(\.assetID)).count
+        }
+        return allDayWallpapers(in: mood).count
             + TimeSlot.allCases.reduce(0) { $0 + wallpaperCount(for: $1, in: mood) }
     }
 
@@ -325,16 +341,20 @@ final class MoodStore: ObservableObject {
         let sourceRoot = moodsRootURL.appendingPathComponent(mood.id)
         let destinationRoot = moodsRootURL.appendingPathComponent(copy.id)
         do {
-            for slotFolder in (try? fileManager.contentsOfDirectory(
-                at: sourceRoot,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )) ?? [] {
-                let destination = destinationRoot.appendingPathComponent(slotFolder.lastPathComponent)
-                if fileManager.fileExists(atPath: destination.path) {
-                    try fileManager.removeItem(at: destination)
+            if usesCatalog {
+                try duplicateCatalogMemberships(from: mood, to: copy)
+            } else {
+                for slotFolder in (try? fileManager.contentsOfDirectory(
+                    at: sourceRoot,
+                    includingPropertiesForKeys: [.isDirectoryKey],
+                    options: [.skipsHiddenFiles]
+                )) ?? [] {
+                    let destination = destinationRoot.appendingPathComponent(slotFolder.lastPathComponent)
+                    if fileManager.fileExists(atPath: destination.path) {
+                        try fileManager.removeItem(at: destination)
+                    }
+                    try fileManager.copyItem(at: slotFolder, to: destination)
                 }
-                try fileManager.copyItem(at: slotFolder, to: destination)
             }
         } catch {
             print("[MoodStore] Failed to duplicate mood files: \(error)")
@@ -351,6 +371,11 @@ final class MoodStore: ObservableObject {
     func delete(_ mood: Mood) {
         guard let idx = moods.firstIndex(where: { $0.id == mood.id }) else { return }
         moods.remove(at: idx)
+        if usesCatalog, var catalog {
+            catalog.memberships.removeAll { $0.moodID == mood.id }
+            self.catalog = catalog
+            saveCatalog()
+        }
         try? fileManager.removeItem(at: moodsRootURL.appendingPathComponent(mood.id))
         if activeMoodID == mood.id {
             setActiveMoodID(moods.first?.id)
@@ -380,10 +405,12 @@ final class MoodStore: ObservableObject {
         to slot: TimeSlot,
         in mood: Mood
     ) async throws -> WallpaperImportSummary {
-        try await importItems(
+        try ensureCatalog()
+        return try await importItems(
             from: urls,
             to: folderURL(for: slot, in: mood),
             in: mood,
+            placement: .during(slot),
             slotName: slot.rawValue
         )
     }
@@ -392,10 +419,12 @@ final class MoodStore: ObservableObject {
     /// Day pool. Folder contents are discovered recursively, non-images are
     /// ignored, and individual decode failures don't discard successful work.
     func importAllDayWallpapers(from urls: [URL], in mood: Mood) async throws -> WallpaperImportSummary {
-        try await importItems(
+        try ensureCatalog()
+        return try await importItems(
             from: urls,
             to: allDayFolderURL(in: mood),
             in: mood,
+            placement: .throughoutTheDay,
             slotName: Self.allDayFolderName
         )
     }
@@ -408,11 +437,35 @@ final class MoodStore: ObservableObject {
         from urls: [URL],
         to destinationFolder: URL,
         in mood: Mood,
+        placement: WallpaperPlacement,
         slotName: String
     ) async throws -> WallpaperImportSummary {
-        let summary = try await Task.detached(priority: .userInitiated) {
-            try Self.importItems(urls, to: destinationFolder)
-        }.value
+        let summary: WallpaperImportSummary
+        if usesCatalog {
+            let collected = try await Task.detached(priority: .userInitiated) {
+                try Self.discoveredImageURLs(urls)
+            }.value
+            var imported = 0
+            var failed = collected.failedCount
+            for sourceURL in collected.urls {
+                do {
+                    try ingestImportedFile(sourceURL, into: mood, placement: placement)
+                    imported += 1
+                } catch {
+                    failed += 1
+                    print("[MoodStore] Failed to import \(sourceURL.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            summary = WallpaperImportSummary(
+                discoveredCount: collected.urls.count + collected.failedCount,
+                importedCount: imported,
+                failedCount: failed
+            )
+        } else {
+            summary = try await Task.detached(priority: .userInitiated) {
+                try Self.importItems(urls, to: destinationFolder)
+            }.value
+        }
 
         if summary.importedCount > 0 {
             touch(mood)
@@ -426,8 +479,36 @@ final class MoodStore: ObservableObject {
         return summary
     }
 
+    /// Remove from this Vibe only. The canonical asset stays in Moodpaper.
     func removeWallpaper(_ url: URL, from mood: Mood) throws {
+        if usesCatalog {
+            try removeWallpaperMembership(url, from: mood)
+            return
+        }
         try fileManager.removeItem(at: url)
+        touch(mood)
+        objectWillChange.send()
+    }
+
+    /// Destroy the asset and every Vibe membership / assignment.
+    func deleteWallpaperFromMoodpaper(_ url: URL) throws {
+        try ensureCatalog()
+        guard var catalog, let asset = resolveAsset(for: url) else {
+            throw NSError(domain: "MoodStore", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Wallpaper is not in the catalog"
+            ])
+        }
+        let canonical = LibraryMigration.canonicalURL(for: asset, libraryRoot: storageRootURL)
+        catalog.removeAssetAndMemberships(id: asset.id)
+        self.catalog = catalog
+        saveCatalog()
+        try? fileManager.removeItem(at: canonical)
+        objectWillChange.send()
+    }
+
+    func addWallpaper(_ url: URL, to mood: Mood, placement: WallpaperPlacement = .throughoutTheDay) throws {
+        try ensureCatalog()
+        try ingestExistingFile(url, into: mood, placement: placement, copyIfUntracked: true)
         touch(mood)
         objectWillChange.send()
     }
@@ -436,6 +517,9 @@ final class MoodStore: ObservableObject {
     /// slot-specific files. The engine still resolves empty slots through
     /// `effectiveWallpapers`; this list is for the unified Wallpapers grid.
     func libraryItems(in mood: Mood) -> [WallpaperLibraryItem] {
+        if usesCatalog {
+            return catalogLibraryItems(in: mood, uniqueAssets: true)
+        }
         var items: [WallpaperLibraryItem] = allDayWallpapers(in: mood).map {
             WallpaperLibraryItem(url: $0, placement: .throughoutTheDay)
         }
@@ -456,6 +540,10 @@ final class MoodStore: ObservableObject {
         for url: URL,
         in mood: Mood
     ) throws {
+        if usesCatalog {
+            try setCatalogPlacement(placement, for: url, in: mood)
+            return
+        }
         let destinationFolder: URL
         switch placement {
         case .throughoutTheDay:
@@ -479,6 +567,24 @@ final class MoodStore: ObservableObject {
     }
 
     func dayPartRepresentation(for group: DayPartGroup, in mood: Mood) -> DayPartGroupRepresentation {
+        if usesCatalog {
+            let idSets: [Set<String>] = group.slots.map { slot in
+                Set((catalog?.memberships(forMoodID: mood.id) ?? []).compactMap { membership in
+                    membership.includes(slot: slot) ? membership.assetID : nil
+                })
+            }
+            if idSets.allSatisfy(\.isEmpty) {
+                return .usingVibePhotos
+            }
+            let first = idSets[0]
+            if idSets.allSatisfy({ $0 == first }) {
+                let names = first.compactMap { assetID -> String? in
+                    catalog?.asset(id: assetID)?.originalFilename
+                }.sorted()
+                return .assigned(filenames: names)
+            }
+            return .mixed
+        }
         let filenameSets = group.slots.map { slot in
             Set(wallpapers(for: slot, in: mood).map(\.lastPathComponent))
         }
@@ -509,6 +615,13 @@ final class MoodStore: ObservableObject {
     }
 
     func playThroughoutTheDay(_ url: URL, in mood: Mood) throws {
+        if usesCatalog {
+            try mutateMembership(for: url, in: mood) { membership in
+                membership.throughoutTheDay = true
+                membership.slotIDs = []
+            }
+            return
+        }
         try ensureThroughoutTheDayCopy(of: url, in: mood)
         for slot in TimeSlot.allCases {
             if let assigned = wallpaper(named: url.lastPathComponent, for: slot, in: mood) {
@@ -518,6 +631,15 @@ final class MoodStore: ObservableObject {
     }
 
     func addWallpaperAssignment(_ url: URL, to slot: TimeSlot, in mood: Mood) throws {
+        if usesCatalog {
+            try mutateMembership(for: url, in: mood) { membership in
+                if !membership.slotIDs.contains(slot.rawValue) {
+                    membership.slotIDs.append(slot.rawValue)
+                    membership.slotIDs.sort()
+                }
+            }
+            return
+        }
         let destinationFolder = folderURL(for: slot, in: mood)
         let destination = destinationFolder.appendingPathComponent(url.lastPathComponent)
         if fileManager.fileExists(atPath: destination.path) {
@@ -529,6 +651,15 @@ final class MoodStore: ObservableObject {
     }
 
     func removeWallpaperAssignment(_ url: URL, from slot: TimeSlot, in mood: Mood) throws {
+        if usesCatalog {
+            try mutateMembership(for: url, in: mood) { membership in
+                membership.slotIDs.removeAll { $0 == slot.rawValue }
+                if membership.slotIDs.isEmpty && !membership.throughoutTheDay {
+                    membership.throughoutTheDay = true
+                }
+            }
+            return
+        }
         let folder = folderURL(for: slot, in: mood).standardizedFileURL
         guard url.deletingLastPathComponent().standardizedFileURL == folder else { return }
         try ensureThroughoutTheDayCopyIfLastAssignment(url, in: mood)
@@ -538,6 +669,9 @@ final class MoodStore: ObservableObject {
     }
 
     func vibeSourceItems(in mood: Mood) -> [WallpaperLibraryItem] {
+        if usesCatalog {
+            return catalogLibraryItems(in: mood, uniqueAssets: true)
+        }
         var seen = Set<String>()
         var items: [WallpaperLibraryItem] = []
         for url in allDayWallpapers(in: mood) {
@@ -718,5 +852,380 @@ final class MoodStore: ObservableObject {
         guard let idx = moods.firstIndex(where: { $0.id == mood.id }) else { return }
         moods[idx].updatedAt = Date()
         save()
+    }
+
+    // MARK: - Catalog v2
+
+    func resolveCanonicalURL(forPlaybackIdentifier identifier: String) -> URL? {
+        guard usesCatalog, identifier.hasPrefix("/") else { return nil }
+        if let asset = catalog?.assets.first(where: {
+            $0.legacySourcePaths.contains(identifier)
+                || LibraryMigration.canonicalURL(for: $0, libraryRoot: storageRootURL).path == identifier
+        }) {
+            let url = LibraryMigration.canonicalURL(for: asset, libraryRoot: storageRootURL)
+            return fileManager.fileExists(atPath: url.path) ? url : nil
+        }
+        return nil
+    }
+
+    private func adoptCatalogIfNeeded() {
+        if let loaded = try? LibraryMigration.loadCatalog(from: storageRootURL), loaded.isReady {
+            catalog = loaded
+            return
+        }
+        guard LibraryMigration.needsMigration(libraryRoot: storageRootURL) else { return }
+        do {
+            _ = try LibraryMigration.migrateIfNeeded(libraryRoot: storageRootURL)
+            catalog = try LibraryMigration.loadCatalog(from: storageRootURL)
+        } catch {
+            print("[MoodStore] Catalog migration deferred: \(error.localizedDescription)")
+            catalog = nil
+        }
+    }
+
+    func ensureCatalog() throws {
+        if usesCatalog { return }
+        if LibraryMigration.needsMigration(libraryRoot: storageRootURL) {
+            _ = try LibraryMigration.migrateIfNeeded(libraryRoot: storageRootURL)
+        }
+        if let loaded = try? LibraryMigration.loadCatalog(from: storageRootURL), loaded.isReady {
+            catalog = loaded
+            return
+        }
+        catalog = WallpaperCatalog.readyEmpty()
+        try persistCatalog()
+    }
+
+    private func saveCatalog() {
+        try? persistCatalog()
+    }
+
+    private func persistCatalog() throws {
+        guard let catalog else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(catalog).write(
+            to: WallpaperCatalogFile.catalogURL(in: storageRootURL),
+            options: .atomic
+        )
+    }
+
+    private func catalogURLs(in mood: Mood, where predicate: (WallpaperMembership) -> Bool) -> [URL] {
+        guard let catalog else { return [] }
+        let urls = catalog.memberships(forMoodID: mood.id).filter(predicate).compactMap { membership -> URL? in
+            guard let asset = catalog.asset(id: membership.assetID) else { return nil }
+            return LibraryMigration.canonicalURL(for: asset, libraryRoot: storageRootURL)
+        }
+        return urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func catalogLibraryItems(in mood: Mood, uniqueAssets: Bool) -> [WallpaperLibraryItem] {
+        guard let catalog else { return [] }
+        var items: [WallpaperLibraryItem] = []
+        var seen = Set<String>()
+        for membership in catalog.memberships(forMoodID: mood.id) {
+            guard let asset = catalog.asset(id: membership.assetID) else { continue }
+            if uniqueAssets, !seen.insert(asset.id).inserted { continue }
+            let url = LibraryMigration.canonicalURL(for: asset, libraryRoot: storageRootURL)
+            let placement: WallpaperPlacement
+            if membership.throughoutTheDay {
+                placement = .throughoutTheDay
+            } else if let raw = membership.slotIDs.first, let slot = TimeSlot(rawValue: raw) {
+                placement = .during(slot)
+            } else {
+                placement = .throughoutTheDay
+            }
+            items.append(
+                WallpaperLibraryItem(
+                    url: url,
+                    placement: placement,
+                    assetID: asset.id,
+                    vibeIDs: catalog.moodIDs(forAssetID: asset.id)
+                )
+            )
+        }
+        return items.sorted {
+            $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
+        }
+    }
+
+    private func resolveAsset(for url: URL) -> WallpaperAsset? {
+        guard let catalog else { return nil }
+        let path = url.standardizedFileURL.path
+        if let match = catalog.assets.first(where: {
+            LibraryMigration.canonicalURL(for: $0, libraryRoot: storageRootURL).path == path
+                || $0.legacySourcePaths.contains(path)
+                || $0.legacySourcePaths.contains(url.path)
+        }) {
+            return match
+        }
+        return catalog.asset(matchingURL: url)
+    }
+
+    private func removeWallpaperMembership(_ url: URL, from mood: Mood) throws {
+        guard var catalog, let asset = resolveAsset(for: url) else {
+            throw NSError(domain: "MoodStore", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Wallpaper is not in this Vibe"
+            ])
+        }
+        catalog.removeMembership(assetID: asset.id, moodID: mood.id)
+        self.catalog = catalog
+        saveCatalog()
+        touch(mood)
+        objectWillChange.send()
+    }
+
+    private func setCatalogPlacement(
+        _ placement: WallpaperPlacement,
+        for url: URL,
+        in mood: Mood
+    ) throws {
+        try mutateMembership(for: url, in: mood) { membership in
+            switch placement {
+            case .throughoutTheDay:
+                membership.throughoutTheDay = true
+                membership.slotIDs = []
+            case .during(let slot):
+                membership.throughoutTheDay = false
+                membership.slotIDs = [slot.rawValue]
+            }
+        }
+    }
+
+    private func mutateMembership(
+        for url: URL,
+        in mood: Mood,
+        _ body: (inout WallpaperMembership) -> Void
+    ) throws {
+        guard var catalog, let asset = resolveAsset(for: url) else {
+            throw NSError(domain: "MoodStore", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Wallpaper is not in this Vibe"
+            ])
+        }
+        var membership = catalog.memberships.first {
+            $0.assetID == asset.id && $0.moodID == mood.id
+        } ?? WallpaperMembership(
+            assetID: asset.id,
+            moodID: mood.id,
+            throughoutTheDay: false,
+            slotIDs: []
+        )
+        body(&membership)
+        catalog.replaceMembership(membership)
+        self.catalog = catalog
+        saveCatalog()
+        touch(mood)
+        objectWillChange.send()
+    }
+
+    private func duplicateCatalogMemberships(from source: Mood, to copy: Mood) throws {
+        guard var catalog else { return }
+        for membership in catalog.memberships(forMoodID: source.id) {
+            var duplicated = membership
+            duplicated.moodID = copy.id
+            catalog.replaceMembership(duplicated)
+        }
+        self.catalog = catalog
+        saveCatalog()
+    }
+
+    private func ingestImportedFile(
+        _ sourceURL: URL,
+        into mood: Mood,
+        placement: WallpaperPlacement
+    ) throws {
+        try fileManager.createDirectory(
+            at: WallpaperCatalogFile.assetsRoot(in: storageRootURL),
+            withIntermediateDirectories: true
+        )
+        let temp = WallpaperCatalogFile.assetsRoot(in: storageRootURL)
+            .appendingPathComponent("import-\(UUID().uuidString.lowercased()).jpg")
+        do {
+            try writeNormalizedImage(from: sourceURL, to: temp)
+            try ingestExistingFile(
+                temp,
+                into: mood,
+                placement: placement,
+                copyIfUntracked: false,
+                originalFilename: sourceURL.lastPathComponent
+            )
+            if fileManager.fileExists(atPath: temp.path), resolveAsset(for: temp) == nil {
+                try? fileManager.removeItem(at: temp)
+            }
+        } catch {
+            try? fileManager.removeItem(at: temp)
+            throw error
+        }
+    }
+
+    private func ingestExistingFile(
+        _ fileURL: URL,
+        into mood: Mood,
+        placement: WallpaperPlacement,
+        copyIfUntracked: Bool,
+        originalFilename: String? = nil
+    ) throws {
+        try ensureCatalog()
+        guard var catalog else { return }
+        if let existing = resolveAsset(for: fileURL) {
+            var membership = catalog.memberships.first {
+                $0.assetID == existing.id && $0.moodID == mood.id
+            } ?? WallpaperMembership(
+                assetID: existing.id,
+                moodID: mood.id,
+                throughoutTheDay: false,
+                slotIDs: []
+            )
+            apply(placement, to: &membership)
+            catalog.replaceMembership(membership)
+            self.catalog = catalog
+            saveCatalog()
+            return
+        }
+
+        let hash = try WallpaperIdentity.sha256Hex(of: fileURL)
+        let byteCount = try fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let metadata = WallpaperIdentity.imageMetadata(at: fileURL)
+        if let metadata {
+            let identity = WallpaperAssetIdentity(
+                contentHash: hash,
+                byteCount: byteCount,
+                pixelWidth: metadata.width,
+                pixelHeight: metadata.height
+            )
+            if let match = catalog.assets.first(where: { $0.identityKey == identity }) {
+                var membership = catalog.memberships.first {
+                    $0.assetID == match.id && $0.moodID == mood.id
+                } ?? WallpaperMembership(
+                    assetID: match.id,
+                    moodID: mood.id,
+                    throughoutTheDay: false,
+                    slotIDs: []
+                )
+                apply(placement, to: &membership)
+                catalog.replaceMembership(membership)
+                if fileURL.deletingLastPathComponent().standardizedFileURL
+                    == WallpaperCatalogFile.assetsRoot(in: storageRootURL).standardizedFileURL {
+                    try? fileManager.removeItem(at: fileURL)
+                }
+                self.catalog = catalog
+                saveCatalog()
+                return
+            }
+        }
+
+        let assetID = UUID().uuidString.lowercased()
+        let ext = fileURL.pathExtension.isEmpty ? "jpg" : fileURL.pathExtension.lowercased()
+        let relative = "\(WallpaperCatalogFile.assetsFolderName)/\(WallpaperCatalogFile.assetsDirectoryName)/\(assetID).\(ext)"
+        let destination = WallpaperCatalogFile.assetsRoot(in: storageRootURL)
+            .appendingPathComponent("\(assetID).\(ext)")
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if copyIfUntracked {
+            if fileManager.fileExists(atPath: destination.path) == false {
+                try fileManager.copyItem(at: fileURL, to: destination)
+            }
+        } else {
+            if fileURL != destination {
+                if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
+                }
+                try fileManager.moveItem(at: fileURL, to: destination)
+            }
+        }
+        let asset = WallpaperAsset(
+            id: assetID,
+            originalFilename: originalFilename ?? fileURL.lastPathComponent,
+            relativePath: relative,
+            contentHash: try WallpaperIdentity.sha256Hex(of: destination),
+            byteCount: try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? byteCount,
+            pixelWidth: metadata?.width,
+            pixelHeight: metadata?.height,
+            uti: metadata?.uti,
+            createdAt: Date(),
+            legacySourcePaths: [fileURL.standardizedFileURL.path]
+        )
+        catalog.upsert(asset)
+        var membership = WallpaperMembership(
+            assetID: assetID,
+            moodID: mood.id,
+            throughoutTheDay: false,
+            slotIDs: []
+        )
+        apply(placement, to: &membership)
+        catalog.replaceMembership(membership)
+        self.catalog = catalog
+        saveCatalog()
+    }
+
+    private func apply(_ placement: WallpaperPlacement, to membership: inout WallpaperMembership) {
+        switch placement {
+        case .throughoutTheDay:
+            membership.throughoutTheDay = true
+        case .during(let slot):
+            if !membership.slotIDs.contains(slot.rawValue) {
+                membership.slotIDs.append(slot.rawValue)
+                membership.slotIDs.sort()
+            }
+        }
+    }
+
+    private struct DiscoveredImages: Sendable {
+        let urls: [URL]
+        let failedCount: Int
+    }
+
+    nonisolated static func discoveredImageURLs(_ sourceURLs: [URL]) throws -> DiscoveredImages {
+        var securityScopedRoots: [URL] = []
+        for url in sourceURLs where url.startAccessingSecurityScopedResource() {
+            securityScopedRoots.append(url)
+        }
+        defer {
+            for url in securityScopedRoots {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileManager = FileManager.default
+        var discovered = Set<URL>()
+        var discoveryFailureCount = 0
+
+        for sourceURL in sourceURLs {
+            guard let values = try? sourceURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey]) else {
+                if supportedImageExtensions.contains(sourceURL.pathExtension.lowercased()) {
+                    discoveryFailureCount += 1
+                }
+                continue
+            }
+            if values.isDirectory == true {
+                let enumerator = fileManager.enumerator(
+                    at: sourceURL,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                    errorHandler: { _, _ in
+                        discoveryFailureCount += 1
+                        return true
+                    }
+                )
+                while let candidate = enumerator?.nextObject() as? URL {
+                    guard supportedImageExtensions.contains(candidate.pathExtension.lowercased()) else { continue }
+                    let candidateValues = try? candidate.resourceValues(forKeys: [.isRegularFileKey])
+                    if candidateValues?.isRegularFile == true {
+                        discovered.insert(candidate)
+                    }
+                }
+            } else if values.isRegularFile == true,
+                      supportedImageExtensions.contains(sourceURL.pathExtension.lowercased()) {
+                discovered.insert(sourceURL)
+            }
+        }
+
+        return DiscoveredImages(
+            urls: discovered.sorted(by: { $0.path < $1.path }),
+            failedCount: discoveryFailureCount
+        )
     }
 }
