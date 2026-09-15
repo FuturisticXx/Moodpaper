@@ -4,8 +4,8 @@ import SwiftUI
 
 // The Moodpaper switcher: every Vibe is a named set of wallpaper
 // assignments, and this grid is where the user creates, renames, duplicates,
-// deletes, and activates them. All Day provides the simple shared pool, while
-// the Library offers optional per-slot overrides.
+// deletes, and activates them. Shared wallpapers play throughout the day;
+// Wallpapers can assign any photo to a time of day.
 struct MoodsView: View {
     @ObservedObject private var store = MoodStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -49,9 +49,13 @@ struct MoodsView: View {
                 }
 
                 if store.moods.isEmpty {
-                    EmptyVibesCard {
-                        showingCreateSheet = true
-                    }
+                    EmptyVibesCard(
+                        onCreate: { showingCreateSheet = true },
+                        onStartWithoutName: {
+                            _ = store.ensurePlayableVibe()
+                            NotificationCenter.default.post(name: .navigateToUserWallpapers, object: nil)
+                        }
+                    )
                 } else {
                     LazyVGrid(
                         columns: [
@@ -84,7 +88,7 @@ struct MoodsView: View {
                     }
                 }
 
-                Text("All Day wallpapers make setup simple. Add time-slot favorites from the Library whenever you want.")
+                Text("Add wallpapers that play throughout the day. Assign any photo to a time of day from Wallpapers.")
                     .font(HorizonTypography.caption)
                     .foregroundColor(HorizonColors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -180,6 +184,7 @@ private struct LegacyLibraryImportCard: View {
 
 private struct EmptyVibesCard: View {
     let onCreate: () -> Void
+    let onStartWithoutName: () -> Void
 
     var body: some View {
         VStack(spacing: HorizonSpacing.md) {
@@ -192,7 +197,7 @@ private struct EmptyVibesCard: View {
                 Text("What's your Vibe?")
                     .font(HorizonTypography.title2)
                     .foregroundColor(HorizonColors.textPrimary)
-                Text("Create a feeling for your desktop, then fill it with wallpapers you love.")
+                Text("Add wallpapers and start playing. Naming a Vibe is optional — it's a playback style, not a prerequisite.")
                     .font(HorizonTypography.callout)
                     .foregroundColor(HorizonColors.textSecondary)
                     .multilineTextAlignment(.center)
@@ -203,6 +208,11 @@ private struct EmptyVibesCard: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(HorizonColors.secondaryAccent)
+
+            Button("Start with wallpapers", action: onStartWithoutName)
+                .buttonStyle(.plain)
+                .foregroundStyle(HorizonColors.textSecondary)
+                .accessibilityLabel("Start with wallpapers without naming a Vibe")
         }
         .frame(maxWidth: .infinity, minHeight: 260)
         .horizonGlassCard(style: .standard, padding: HorizonSpacing.xl)
@@ -228,95 +238,147 @@ struct MoodCard: View {
 
     @ObservedObject private var store = MoodStore.shared
     @State private var isHovered = false
+    @State private var showingShapeMyDay = false
 
     private var wallpaperCount: Int { store.totalWallpaperCount(in: mood) }
 
     var body: some View {
-        Button(action: wallpaperCount == 0 ? onAddWallpapers : onActivate) {
-            VStack(alignment: .leading, spacing: HorizonSpacing.sm) {
-                HStack(alignment: .top) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: HorizonRadius.md, style: .continuous)
-                            .fill(HorizonColors.secondaryAccent.opacity(0.2))
-                            .frame(width: 44, height: 44)
-                        Image(systemName: "paintpalette.fill")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(HorizonColors.secondaryAccent)
-                    }
-                    Spacer()
-                    if wallpaperCount > 0 {
-                        Menu {
-                            Button("Choose Folder", systemImage: "folder.fill", action: onChooseFolder)
-                            Button("Choose Photos", systemImage: "photo.on.rectangle.angled", action: onChoosePhotos)
-                        } label: {
-                            Image(systemName: "plus")
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: wallpaperCount == 0 ? onAddWallpapers : onActivate) {
+                VStack(alignment: .leading, spacing: HorizonSpacing.sm) {
+                    HStack(alignment: .top) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: HorizonRadius.md, style: .continuous)
+                                .fill(HorizonColors.secondaryAccent.opacity(0.2))
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "paintpalette.fill")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(HorizonColors.secondaryAccent)
+                        }
+                        Spacer()
+                        if wallpaperCount > 0 {
+                            Menu {
+                                Button("Choose Folder", systemImage: "folder.fill", action: onChooseFolder)
+                                Button("Choose Photos", systemImage: "photo.on.rectangle.angled", action: onChoosePhotos)
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(HorizonColors.textSecondary)
+                                    .padding(6)
+                                    .background(Circle().fill(HorizonColors.glassFill))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .help("Add wallpapers")
+                            .accessibilityLabel("Add wallpapers to \(mood.displayName)")
+                        }
+                        Button(action: onEdit) {
+                            Image(systemName: "slider.horizontal.3")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(HorizonColors.textSecondary)
                                 .padding(6)
-                                .background(Circle().fill(HorizonColors.glassFill))
+                                .background(
+                                    Circle().fill(HorizonColors.glassFill)
+                                )
                         }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .help("Add wallpapers")
-                        .accessibilityLabel("Add wallpapers to \(mood.name)")
+                        .buttonStyle(.plain)
+                        .help("Edit Vibe")
+                        .accessibilityLabel("Edit \(mood.displayName)")
                     }
-                    Button(action: onEdit) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 13, weight: .semibold))
+
+                    Text(mood.displayName)
+                        .font(HorizonTypography.headline)
+                        .foregroundColor(HorizonColors.textPrimary)
+                        .lineLimit(1)
+                        .italic(mood.isUnnamed)
+
+                    if wallpaperCount == 0 {
+                        Label("Add Wallpapers", systemImage: "plus.circle.fill")
+                            .font(HorizonTypography.callout)
+                            .foregroundColor(HorizonColors.secondaryAccent)
+                    } else {
+                        Text("\(wallpaperCount) wallpaper\(wallpaperCount == 1 ? "" : "s")")
+                            .font(HorizonTypography.caption)
                             .foregroundColor(HorizonColors.textSecondary)
-                            .padding(6)
-                            .background(
-                                Circle().fill(HorizonColors.glassFill)
-                            )
                     }
-                    .buttonStyle(.plain)
-                    .help("Edit Vibe")
-                    .accessibilityLabel("Edit \(mood.name)")
-                }
 
-                Text(mood.name)
-                    .font(HorizonTypography.headline)
-                    .foregroundColor(HorizonColors.textPrimary)
-                    .lineLimit(1)
-
-                if wallpaperCount == 0 {
-                    Label("Add Wallpapers", systemImage: "plus.circle.fill")
-                        .font(HorizonTypography.callout)
-                        .foregroundColor(HorizonColors.secondaryAccent)
-                } else {
-                    Text("\(wallpaperCount) wallpaper\(wallpaperCount == 1 ? "" : "s")")
-                        .font(HorizonTypography.caption)
-                        .foregroundColor(HorizonColors.textSecondary)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(isActive ? Color.green : HorizonColors.textTertiary.opacity(0.4))
+                            .frame(width: 6, height: 6)
+                        Text(isActive ? "Active" : (wallpaperCount == 0 ? "Ready for your favorites" : "Tap to activate"))
+                            .font(HorizonTypography.caption)
+                            .foregroundColor(isActive ? .green : HorizonColors.textTertiary)
+                    }
                 }
-
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(isActive ? Color.green : HorizonColors.textTertiary.opacity(0.4))
-                        .frame(width: 6, height: 6)
-                    Text(isActive ? "Active" : (wallpaperCount == 0 ? "Ready for your favorites" : "Tap to activate"))
-                        .font(HorizonTypography.caption)
-                        .foregroundColor(isActive ? .green : HorizonColors.textTertiary)
-                }
+                .padding(HorizonSpacing.lg)
+                .padding(.bottom, 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(HorizonSpacing.lg)
+            .buttonStyle(.plain)
+
+            VibeHowOftenControl(mood: mood)
+                .padding(.horizontal, HorizonSpacing.lg)
+            Button("Shape My Day") {
+                showingShapeMyDay = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .padding(.horizontal, HorizonSpacing.lg)
+            .padding(.bottom, HorizonSpacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: HorizonRadius.lg, style: .continuous)
-                    .fill(isActive
-                          ? AnyShapeStyle(HorizonColors.secondaryAccent.opacity(0.15))
-                          : AnyShapeStyle(HorizonColors.glassFill))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: HorizonRadius.lg, style: .continuous)
-                    .stroke(isActive
-                            ? HorizonColors.secondaryAccent.opacity(0.5)
-                            : (isHovered ? HorizonColors.glassStrokeHover : HorizonColors.glassStroke),
-                            lineWidth: isActive ? 1.5 : 1)
-            )
+            .accessibilityIdentifier("shape-my-day")
+            .accessibilityHint("Optional. Opens time-of-day wallpaper control. Not required to use this Vibe.")
         }
-        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: HorizonRadius.lg, style: .continuous)
+                .fill(isActive
+                      ? AnyShapeStyle(HorizonColors.secondaryAccent.opacity(0.15))
+                      : AnyShapeStyle(HorizonColors.glassFill))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: HorizonRadius.lg, style: .continuous)
+                .stroke(isActive
+                        ? HorizonColors.secondaryAccent.opacity(0.5)
+                        : (isHovered ? HorizonColors.glassStrokeHover : HorizonColors.glassStroke),
+                        lineWidth: isActive ? 1.5 : 1)
+        )
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(mood.name), \(isActive ? "active" : "inactive"), \(wallpaperCount == 0 ? "add wallpapers" : "\(wallpaperCount) wallpapers")")
+        .sheet(isPresented: $showingShapeMyDay) {
+            ShapeMyDayView(moodID: mood.id)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(mood.displayName), \(isActive ? "active" : "inactive"), \(wallpaperCount == 0 ? "add wallpapers" : "\(wallpaperCount) wallpapers")")
+    }
+}
+
+private struct VibeHowOftenControl: View {
+    let mood: Mood
+    @ObservedObject private var store = MoodStore.shared
+
+    private var perDay: Double {
+        store.effectiveWallpapersPerDay(for: mood)
+    }
+
+    var body: some View {
+        HStack(spacing: HorizonSpacing.sm) {
+            Text("How often")
+                .font(HorizonTypography.caption)
+                .foregroundColor(HorizonColors.textTertiary)
+            Spacer()
+            Stepper(value: Binding(
+                get: { perDay },
+                set: { store.setWallpapersPerDay($0, for: mood) }
+            ), in: 1...48, step: 1) {
+                Text("\(Int(perDay)) a day")
+                    .font(HorizonTypography.caption)
+                    .monospacedDigit()
+                    .foregroundColor(HorizonColors.textSecondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("How often, \(Int(perDay)) wallpapers a day")
+        .accessibilityHint("How often this Vibe changes wallpapers")
     }
 }
 
@@ -334,6 +396,7 @@ struct MoodEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name: String = ""
     @State private var showingDeleteConfirm = false
+    @State private var showingShapeMyDay = false
     @State private var createdMood: Mood?
 
     private var editingMood: Mood? {
@@ -361,6 +424,11 @@ struct MoodEditorSheet: View {
                 name = mood.name
             }
         }
+        .sheet(isPresented: $showingShapeMyDay) {
+            if let mood = editingMood {
+                ShapeMyDayView(moodID: mood.id)
+            }
+        }
         .alert("Delete this Vibe?", isPresented: $showingDeleteConfirm) {
             Button("Delete", role: .destructive) {
                 if let mood = editingMood {
@@ -376,12 +444,12 @@ struct MoodEditorSheet: View {
 
     private var editorContent: some View {
         VStack(alignment: .leading, spacing: HorizonSpacing.lg) {
-            Text(isCreate ? "Name Your Vibe" : "Edit Vibe")
+            Text(isCreate ? "New Vibe" : "Edit Vibe")
                 .font(HorizonTypography.title3)
                 .foregroundColor(HorizonColors.textPrimary)
 
             VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
-                Text("Vibe name")
+                Text("Name (optional)")
                     .font(HorizonTypography.caption)
                     .foregroundColor(HorizonColors.textSecondary)
                 TextField(OnboardingCopy.namePlaceholder, text: $name)
@@ -403,6 +471,19 @@ struct MoodEditorSheet: View {
             }
 
             if let mood = editingMood {
+                VibeHowOftenControl(mood: mood)
+                VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
+                    Button("Shape My Day") {
+                        showingShapeMyDay = true
+                    }
+                    .buttonStyle(.bordered)
+                    Text("Optional. Keep playing throughout the day, or assign photos to specific times.")
+                        .font(HorizonTypography.caption)
+                        .foregroundColor(HorizonColors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("Opens time-of-day wallpaper control. Not required to use this Vibe.")
                 HStack(spacing: HorizonSpacing.sm) {
                     Button("Duplicate") {
                         store.duplicate(mood)
@@ -431,10 +512,9 @@ struct MoodEditorSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .tint(HorizonColors.secondaryAccent)
-                .disabled(trimmedName.isEmpty)
             }
         }
         .padding(HorizonSpacing.xl)
-        .frame(width: 420, height: isCreate ? 320 : 260)
+        .frame(width: 420, height: isCreate ? 320 : 360)
     }
 }

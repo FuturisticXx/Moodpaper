@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// The friendly front door to a Mood's shared All Day wallpaper pool.
+/// The friendly front door to a Vibe's shared wallpaper pool.
 /// It accepts individual images, whole folders, or a mixture via drag and drop.
 struct MoodWallpaperImportView: View {
     enum Mode: Equatable {
@@ -40,10 +40,10 @@ struct MoodWallpaperImportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: HorizonSpacing.lg) {
             VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
-                Text(mode == .creation ? "Bring \(mood.name) to Life" : "Add Wallpapers to \(mood.name)")
+                Text(mode == .creation ? "Bring \(mood.displayName) to Life" : "Add Wallpapers to \(mood.displayName)")
                     .font(HorizonTypography.title2)
                     .foregroundColor(HorizonColors.textPrimary)
-                Text("Build one All Day pool now. You can add time-specific favorites later.")
+                Text("Drop a folder or a few photos. They play throughout the day, and you can assign any of them to a time of day later.")
                     .font(HorizonTypography.callout)
                     .foregroundColor(HorizonColors.textSecondary)
             }
@@ -170,7 +170,7 @@ struct MoodWallpaperImportView: View {
             } else {
                 VStack(spacing: HorizonSpacing.md) {
                     thumbnailCollage
-                    Text("\(wallpapers.count) wallpaper\(wallpapers.count == 1 ? "" : "s") ready for All Day")
+                    Text("\(wallpapers.count) wallpaper\(wallpapers.count == 1 ? "" : "s") ready to play throughout the day")
                         .font(HorizonTypography.headline)
                         .foregroundColor(HorizonColors.textPrimary)
                     Text("Drop more whenever inspiration strikes.")
@@ -189,7 +189,7 @@ struct MoodWallpaperImportView: View {
             return true
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("All Day wallpaper drop area")
+        .accessibilityLabel("Wallpaper drop area")
         .accessibilityHint("Drop a folder or image files, or use the Choose buttons below")
     }
 

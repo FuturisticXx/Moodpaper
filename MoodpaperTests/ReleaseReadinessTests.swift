@@ -121,8 +121,9 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(moodsSource.contains("Text(\"Vibes\")"))
         XCTAssertTrue(moodsSource.contains("Label(\"New Vibe\""))
         XCTAssertTrue(moodsSource.contains("Create Your First Vibe"))
-        XCTAssertTrue(moodsSource.contains("Add Wallpapers"))
-        XCTAssertTrue(importSource.contains(#"Bring \(mood.name) to Life"#))
+        XCTAssertTrue(moodsSource.contains("VibeHowOftenControl"))
+        XCTAssertTrue(moodsSource.contains("Start with wallpapers"))
+        XCTAssertTrue(importSource.contains(#"Bring \(mood.displayName) to Life"#))
         XCTAssertTrue(importSource.contains("Choose Folder"))
         XCTAssertTrue(importSource.contains("Choose Photos"))
         XCTAssertTrue(importSource.contains("Use This Vibe"))
@@ -147,15 +148,26 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(collageSource.contains(".clipped()"))
     }
 
-    func testLibrarySurfacesAllDayPoolBeforeTimeSlots() throws {
+    func testLibraryPresentsAUnifiedWallpaperGridWithoutAllDayMode() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
             encoding: .utf8
         )
 
-        XCTAssertTrue(source.contains("Text(\"All Day\")"))
-        XCTAssertTrue(source.contains("store.allDayWallpapers(in: mood)"))
-        XCTAssertTrue(source.contains("Using All Day"))
+        XCTAssertTrue(source.contains("store.libraryItems(in: mood)"))
+        XCTAssertTrue(source.contains("Play Throughout the Day"))
+        XCTAssertTrue(source.contains("Use During"))
+        XCTAssertTrue(source.contains("Use Now"))
+        XCTAssertTrue(source.contains("Preview"))
+        XCTAssertTrue(source.contains("importAllDayWallpapers"))
+        XCTAssertTrue(source.contains("Remove from Vibe"))
+        XCTAssertTrue(source.contains("Delete from Moodpaper"))
+        XCTAssertTrue(source.contains("This removes the photo from every Vibe and deletes the stored file"))
+        XCTAssertFalse(source.contains("Text(\"All Day\")"))
+        XCTAssertFalse(source.contains("Using All Day"))
+        XCTAssertFalse(source.contains("onApply"))
+        XCTAssertFalse(source.contains("Set as Wallpaper"))
+        XCTAssertFalse(source.contains("activatePrimaryAction"))
     }
 
     func testViewsDoNotCallApplyMoodChangeDirectly() throws {
@@ -164,7 +176,7 @@ final class ReleaseReadinessTests: XCTestCase {
         // per user action). A view calling applyMoodChange directly
         // reintroduces the asymmetry class from tasks/lessons.md 2026-05-25
         // or double-applies on activation.
-        for viewFile in ["Moodpaper/HorizonSettingsView.swift", "Moodpaper/MoodsView.swift", "Moodpaper/UserLibraryView.swift", "Moodpaper/DashboardView.swift", "Moodpaper/ContentView.swift", "Moodpaper/LibraryView.swift"] {
+        for viewFile in ["Moodpaper/HorizonSettingsView.swift", "Moodpaper/MoodsView.swift", "Moodpaper/UserLibraryView.swift", "Moodpaper/DashboardView.swift", "Moodpaper/ContentView.swift", "Moodpaper/LibraryView.swift", "Moodpaper/ShapeMyDayView.swift"] {
             let source = try String(
                 contentsOf: repoRoot.appendingPathComponent(viewFile),
                 encoding: .utf8
@@ -176,7 +188,7 @@ final class ReleaseReadinessTests: XCTestCase {
         }
     }
 
-    func testDashboardSkipButtonShowsManagerBackedChangingState() throws {
+    func testDashboardNextButtonShowsManagerBackedChangingState() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/DashboardView.swift"),
             encoding: .utf8
@@ -187,6 +199,10 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertTrue(source.contains("if wallpaperManager.isChangingWallpaper"))
         XCTAssertTrue(source.contains("Text(\"Changing…\")"))
         XCTAssertTrue(source.contains(".disabled(wallpaperManager.isChangingWallpaper)"))
+        XCTAssertTrue(source.contains("Text(\"Next\")"))
+        XCTAssertFalse(source.contains("Text(\"Skip\")"))
+        XCTAssertTrue(source.contains("Keep This Wallpaper"))
+        XCTAssertTrue(source.contains("heroActionLabel(title: \"Resume\")"))
     }
 
     func testDashboardCurrentWallpaperCallbacksDeferManagerMutationsOutOfViewUpdates() throws {
@@ -273,5 +289,107 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(source.contains("SidebarSectionHeader(\"Debug\""))
         XCTAssertFalse(source.contains("SidebarItem(section: .diagnostics"))
         XCTAssertFalse(source.contains("case .diagnostics"))
+    }
+
+    func testShapeMyDayIsOptionalProgressiveDisclosureOverDetailedPeriods() throws {
+        let editor = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodsView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(editor.contains("Shape My Day"))
+        XCTAssertTrue(editor.contains("showingShapeMyDay"))
+        XCTAssertTrue(editor.contains("VibeHowOftenControl"))
+
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/ShapeMyDayView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("Text(\"Shape My Day\")"))
+        XCTAssertTrue(source.contains("All Periods"))
+        XCTAssertTrue(source.contains("Using photos from this Vibe."))
+        XCTAssertTrue(source.contains("Skip this time of day"))
+        XCTAssertTrue(source.contains("Assign selected"))
+        XCTAssertTrue(source.contains("Use During"))
+        XCTAssertTrue(source.contains("dropDestination"))
+        XCTAssertTrue(source.contains("accessibilityAction"))
+        for name in ["Deep Night", "Dawn", "Sunrise", "Morning", "Midday", "Afternoon", "Golden Hour", "Dusk"] {
+            XCTAssertTrue(source.contains("slot.displayName") || source.contains(name))
+        }
+        XCTAssertTrue(source.contains("ForEach(TimeSlot.allCases)"))
+        XCTAssertFalse(source.contains("Anytime"))
+        XCTAssertFalse(source.contains("All Day"))
+        XCTAssertFalse(source.contains("applyMoodChange()"))
+    }
+
+    func testDashboardAndWallpapersRemainUnchangedByShapeMyDay() throws {
+        let dashboard = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/DashboardView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(dashboard.contains("Shape My Day"))
+        XCTAssertFalse(dashboard.contains("Anytime"))
+        XCTAssertTrue(dashboard.contains("Keep This Wallpaper"))
+        XCTAssertTrue(dashboard.contains("let cardHeight: CGFloat = 260"))
+
+        let wallpapers = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/UserLibraryView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(wallpapers.contains("Shape My Day"))
+        XCTAssertFalse(wallpapers.contains("Anytime"))
+        XCTAssertTrue(wallpapers.contains("Play Throughout the Day"))
+        XCTAssertTrue(wallpapers.contains("Use During"))
+        XCTAssertTrue(wallpapers.contains("store.libraryItems(in: mood)"))
+    }
+
+    /// The authorization check must run before the first migration write,
+    /// and nothing may consult UserDefaults for it.
+    func testCatalogMigrationGuardRunsBeforeAnyWriteAndIsNotPersisted() throws {
+        let migration = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),
+            encoding: .utf8
+        )
+        let migrateStart = try XCTUnwrap(migration.range(of: "static func migrateIfNeeded(libraryRoot: URL)"))
+        let body = migration[migrateStart.upperBound...]
+        let guardIndex = try XCTUnwrap(body.range(of: "isMigrationBlocked(for: libraryRoot)")).lowerBound
+        let firstWrite = try XCTUnwrap(body.range(of: "createDirectory(")).lowerBound
+        XCTAssertLessThan(guardIndex, firstWrite, "guard must precede the first filesystem write")
+        XCTAssertTrue(migration.contains("MOODPAPER_AUTHORIZE_CATALOG_MIGRATION"))
+        XCTAssertTrue(migration.contains("Catalog migration blocked: explicit authorization required for real user library"))
+        XCTAssertFalse(migration.contains("UserDefaults."), "authorization must never touch UserDefaults")
+        XCTAssertFalse(migration.contains("UserDefaults("), "authorization must never touch UserDefaults")
+        XCTAssertFalse(migration.contains("ENABLE_APP_SANDBOX"))
+
+        let store = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/MoodStore.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(store.contains("authorizationEnvironmentKey"), "MoodStore must not read or store the authorization itself")
+    }
+
+    func testCatalogV2MigrationEngineExistsWithoutRetiringLegacyFolders() throws {
+        let migration = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(migration.contains("static let schemaVersion = WallpaperCatalog.schemaVersion"))
+        XCTAssertTrue(migration.contains("static let migrationVersion = WallpaperCatalog.migrationVersion"))
+        XCTAssertTrue(migration.contains("journal.json"))
+        XCTAssertTrue(migration.contains("never delete Moods"))
+        XCTAssertFalse(migration.contains("removeItem(at: moods"))
+
+        let catalog = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperCatalog.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(catalog.contains("static let schemaVersion = 2"))
+        XCTAssertTrue(catalog.contains("static let migrationVersion = 1"))
+
+        let manager = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperManager.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(manager.contains("resolveCanonicalURL(forPlaybackIdentifier"))
+        XCTAssertTrue(manager.contains("MoodStore.shared.effectiveWallpapers(for: timeSlot"))
     }
 }

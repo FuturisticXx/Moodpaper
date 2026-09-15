@@ -17,6 +17,8 @@ final class MoodStoreTests: XCTestCase {
         suiteName = "HorizonTests.MoodStore.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
         defaults.removePersistentDomain(forName: suiteName)
+        LibraryMigration.testLiveLibraryRoot = nil
+        LibraryMigration.environmentProvider = { [:] }
     }
 
     override func tearDown() {
@@ -78,10 +80,86 @@ final class MoodStoreTests: XCTestCase {
         XCTAssertEqual(store.activeMood?.name, "Optimistic")
     }
 
-    func testCreateRejectsEmptyName() {
+    func testCreateAllowsUnnamedVibe() throws {
         let store = makeStore()
-        XCTAssertNil(store.create(name: "   "))
-        XCTAssertTrue(store.moods.isEmpty)
+        let vibe = try XCTUnwrap(store.create(name: "   "))
+        XCTAssertTrue(vibe.isUnnamed)
+        XCTAssertEqual(vibe.displayName, "My Wallpapers")
+        XCTAssertEqual(store.activeMoodID, vibe.id)
+    }
+
+    func testEnsurePlayableVibeCreatesUnnamedDefaultWhenCatalogIsEmpty() {
+        let store = makeStore()
+        let vibe = store.ensurePlayableVibe()
+        XCTAssertTrue(vibe.isUnnamed)
+        XCTAssertEqual(store.moods.count, 1)
+        XCTAssertEqual(store.activeMoodID, vibe.id)
+    }
+
+    func testNewVibesInheritSettingsDefaultCadenceNotSiblingCadence() throws {
+        // Set the Settings default before creating the store
+        defaults.set(12.0, forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
+        let store = makeStore()
+        let first = try XCTUnwrap(store.create(name: "Calm"))
+        // The new Vibe should inherit the Settings default (12)
+        XCTAssertEqual(first.wallpapersPerDay, 12, "First Vibe should inherit Settings default of 12")
+        // Change the first Vibe's cadence
+        store.setWallpapersPerDay(4, for: first)
+        // Fetch the updated first mood from the store since Mood is a value type
+        let updatedFirst = try XCTUnwrap(store.mood(id: first.id))
+        // Create a second Vibe - it should still inherit the Settings default (12), not the sibling's value (4)
+        let second = try XCTUnwrap(store.create(name: "Bright"))
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: updatedFirst), 4, "First Vibe effective cadence should be 4")
+        XCTAssertEqual(second.wallpapersPerDay, 12, "Second Vibe should inherit Settings default of 12, not sibling's 4")
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: second), 12, "Second Vibe effective cadence should be 12")
+    }
+
+    func testLegacyMoodsWithoutCadenceCopyTheCurrentGlobalSetting() throws {
+        defaults.set(15.0, forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
+        let original = makeStore()
+        let mood = try XCTUnwrap(original.create(name: "Legacy"))
+        let metadata = baseURL.appendingPathComponent("Moods").appendingPathComponent("moods.json")
+        let data = try Data(contentsOf: metadata)
+        var catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        catalog = catalog.map { entry in
+            var copy = entry
+            copy.removeValue(forKey: "wallpapersPerDay")
+            return copy
+        }
+        try JSONSerialization.data(withJSONObject: catalog).write(to: metadata)
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.mood(id: mood.id)?.wallpapersPerDay, 15)
+    }
+
+    func testLegacyMoodsWithoutCadenceUseEightWhenGlobalWasNeverSet() throws {
+        let original = makeStore()
+        let mood = try XCTUnwrap(original.create(name: "Legacy"))
+        let metadata = baseURL.appendingPathComponent("Moods").appendingPathComponent("moods.json")
+        let data = try Data(contentsOf: metadata)
+        var catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        catalog = catalog.map { entry in
+            var copy = entry
+            copy.removeValue(forKey: "wallpapersPerDay")
+            return copy
+        }
+        try JSONSerialization.data(withJSONObject: catalog).write(to: metadata)
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.mood(id: mood.id)?.wallpapersPerDay, 8)
+    }
+
+    func testDuplicateCopiesCadence() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Original"))
+        store.setWallpapersPerDay(6, for: mood)
+        // Fetch the updated mood from the store since Mood is a value type
+        let updatedMood = try XCTUnwrap(store.mood(id: mood.id))
+        XCTAssertEqual(updatedMood.wallpapersPerDay, 6, "Source mood should have cadence 6")
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: updatedMood), 6, "Source effective cadence should be 6")
+        let copy = try XCTUnwrap(store.duplicate(updatedMood))
+        XCTAssertEqual(copy.wallpapersPerDay, 6, "Copy should have source's cadence 6")
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: copy), 6, "Copy effective cadence should be 6")
     }
 
     // MARK: Rename
@@ -246,7 +324,10 @@ final class MoodStoreTests: XCTestCase {
         let nestedFolder = sourceFolder.appendingPathComponent("Favorites")
         try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
         try writeTestImage(to: sourceFolder.appendingPathComponent("lake.png"))
-        try writeTestImage(to: nestedFolder.appendingPathComponent("forest.png"))
+        try writeTestImage(
+            to: nestedFolder.appendingPathComponent("forest.png"),
+            color: CGColor(red: 0.1, green: 0.8, blue: 0.2, alpha: 1)
+        )
         try Data("notes".utf8).write(to: sourceFolder.appendingPathComponent("notes.txt"))
 
         let summary = try await store.importWallpapers(from: [sourceFolder], to: .dusk, in: mood)
@@ -291,7 +372,10 @@ final class MoodStoreTests: XCTestCase {
         let nestedFolder = sourceFolder.appendingPathComponent("Favorites")
         try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
         try writeTestImage(to: sourceFolder.appendingPathComponent("lake.png"))
-        try writeTestImage(to: nestedFolder.appendingPathComponent("forest.png"))
+        try writeTestImage(
+            to: nestedFolder.appendingPathComponent("forest.png"),
+            color: CGColor(red: 0.1, green: 0.8, blue: 0.2, alpha: 1)
+        )
         try Data("notes".utf8).write(to: sourceFolder.appendingPathComponent("notes.txt"))
 
         let summary = try await store.importAllDayWallpapers(from: [sourceFolder], in: mood)
@@ -317,6 +401,66 @@ final class MoodStoreTests: XCTestCase {
         XCTAssertEqual(summary.importedCount, 1)
         XCTAssertEqual(summary.failedCount, 1)
         XCTAssertEqual(store.allDayWallpapers(in: mood).count, 1)
+    }
+
+    func testLibraryItemsIncludeFallbackPoolAndSlotFiles() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try writeTestImage(to: throughout)
+        let morning = store.folderURL(for: .morning, in: mood).appendingPathComponent("morning.jpg")
+        try writeTestImage(to: morning)
+
+        let items = store.libraryItems(in: mood)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(
+            items.first { $0.url.lastPathComponent == "shared.jpg" }?.placement,
+            .throughoutTheDay
+        )
+        XCTAssertEqual(
+            items.first { $0.url.lastPathComponent == "morning.jpg" }?.placement,
+            .during(.morning)
+        )
+    }
+
+    func testSetPlacementMovesFallbackWallpaperIntoATimeSlot() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try writeTestImage(to: throughout)
+
+        try store.setWallpaperPlacement(.during(.dawn), for: throughout, in: mood)
+
+        XCTAssertTrue(store.allDayWallpapers(in: mood).isEmpty)
+        XCTAssertEqual(store.wallpaperCount(for: .dawn, in: mood), 1)
+        XCTAssertEqual(
+            store.libraryItems(in: mood).first?.placement,
+            .during(.dawn)
+        )
+    }
+
+    func testSetPlacementMovesSlotWallpaperBackToThroughoutTheDay() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let morning = store.folderURL(for: .morning, in: mood).appendingPathComponent("morning.jpg")
+        try writeTestImage(to: morning)
+
+        try store.setWallpaperPlacement(.throughoutTheDay, for: morning, in: mood)
+
+        XCTAssertEqual(store.wallpaperCount(for: .morning, in: mood), 0)
+        XCTAssertEqual(store.allDayWallpapers(in: mood).count, 1)
+        XCTAssertEqual(store.libraryItems(in: mood).first?.placement, .throughoutTheDay)
+    }
+
+    func testRemoveWallpaperDeletesFallbackPoolFiles() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Test Vibe"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try writeTestImage(to: throughout)
+
+        XCTAssertNoThrow(try store.removeWallpaper(throughout, from: mood))
+        XCTAssertTrue(store.allDayWallpapers(in: mood).isEmpty)
+        XCTAssertTrue(store.libraryItems(in: mood).isEmpty)
     }
 
     // MARK: Remove
@@ -391,5 +535,228 @@ final class MoodStoreTests: XCTestCase {
 
         store.delete(second)
         XCTAssertEqual(fired, 0)
+    }
+
+    // MARK: Shape My Day assignments
+
+    func testEmptyDetailedPeriodFallsBackToVibePhotos() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try writeTestImage(to: throughout)
+
+        XCTAssertTrue(store.wallpapers(for: .dawn, in: mood).isEmpty)
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .dawn, in: mood).map(\.lastPathComponent),
+            ["shared.jpg"]
+        )
+        XCTAssertEqual(
+            store.dayPartRepresentation(for: .morning, in: mood),
+            .usingVibePhotos
+        )
+    }
+
+    func testAssignedDetailedPeriodOverridesVibeFallback() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try writeTestImage(to: throughout)
+        let dawn = store.folderURL(for: .dawn, in: mood).appendingPathComponent("dawn-only.jpg")
+        try writeTestImage(to: dawn)
+
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .dawn, in: mood).map(\.lastPathComponent),
+            ["dawn-only.jpg"]
+        )
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .sunrise, in: mood).map(\.lastPathComponent),
+            ["shared.jpg"]
+        )
+    }
+
+    func testFourGroupAssignmentWritesEveryMappedDetailedPeriodWithoutLeavingTheVibePool() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("lake.jpg")
+        try writeTestImage(to: throughout)
+        let cadence = store.effectiveWallpapersPerDay(for: mood)
+
+        try store.assignWallpaper(throughout, to: .morning, in: mood)
+
+        XCTAssertEqual(store.allDayWallpapers(in: mood).map(\.lastPathComponent), ["lake.jpg"])
+        for slot in DayPartGroup.morning.slots {
+            XCTAssertEqual(
+                store.wallpapers(for: slot, in: mood).map(\.lastPathComponent),
+                ["lake.jpg"]
+            )
+        }
+        XCTAssertTrue(store.wallpapers(for: .midday, in: mood).isEmpty)
+        XCTAssertEqual(
+            store.dayPartRepresentation(for: .morning, in: mood),
+            .assigned(filenames: ["lake.jpg"])
+        )
+        XCTAssertEqual(store.effectiveWallpapersPerDay(for: mood), cadence)
+    }
+
+    func testRefiningOneDetailedPeriodLeavesTheOthersUntouched() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("lake.jpg")
+        try writeTestImage(to: throughout)
+        try store.assignWallpaper(throughout, to: .morning, in: mood)
+
+        let dawnCopy = try XCTUnwrap(store.wallpapers(for: .dawn, in: mood).first)
+        try store.removeWallpaperAssignment(dawnCopy, from: .dawn, in: mood)
+
+        XCTAssertTrue(store.wallpapers(for: .dawn, in: mood).isEmpty)
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .dawn, in: mood).map(\.lastPathComponent),
+            ["lake.jpg"]
+        )
+        XCTAssertEqual(
+            store.wallpapers(for: .sunrise, in: mood).map(\.lastPathComponent),
+            ["lake.jpg"]
+        )
+        XCTAssertEqual(
+            store.wallpapers(for: .morning, in: mood).map(\.lastPathComponent),
+            ["lake.jpg"]
+        )
+        XCTAssertEqual(
+            store.wallpapers(for: .deepNight, in: mood).map(\.lastPathComponent),
+            ["lake.jpg"]
+        )
+        XCTAssertEqual(store.dayPartRepresentation(for: .morning, in: mood), .mixed)
+    }
+
+    func testUnassigningAPeriodReturnsThatPeriodToFallback() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try writeTestImage(to: throughout)
+        try store.addWallpaperAssignment(throughout, to: .midday, in: mood)
+
+        let middayCopy = try XCTUnwrap(store.wallpapers(for: .midday, in: mood).first)
+        try store.removeWallpaperAssignment(middayCopy, from: .midday, in: mood)
+
+        XCTAssertTrue(store.wallpapers(for: .midday, in: mood).isEmpty)
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .midday, in: mood).map(\.lastPathComponent),
+            ["shared.jpg"]
+        )
+    }
+
+    func testExistingDetailedAssignmentsAreUnchangedWhenInspectingTheFourGroupSummary() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Legacy"))
+        let dawn = store.folderURL(for: .dawn, in: mood).appendingPathComponent("dawn.jpg")
+        let sunrise = store.folderURL(for: .sunrise, in: mood).appendingPathComponent("sunrise.jpg")
+        try writeTestImage(to: dawn)
+        try writeTestImage(to: sunrise, color: CGColor(red: 0.9, green: 0.4, blue: 0.1, alpha: 1))
+        let before = try folderFingerprint(in: mood, store: store)
+
+        XCTAssertEqual(store.dayPartRepresentation(for: .morning, in: mood), .mixed)
+
+        let after = try folderFingerprint(in: mood, store: store)
+        XCTAssertEqual(after, before)
+        XCTAssertEqual(store.wallpapers(for: .dawn, in: mood).map(\.lastPathComponent), ["dawn.jpg"])
+        XCTAssertEqual(store.wallpapers(for: .sunrise, in: mood).map(\.lastPathComponent), ["sunrise.jpg"])
+        XCTAssertTrue(store.wallpapers(for: .morning, in: mood).isEmpty)
+        XCTAssertTrue(store.allDayWallpapers(in: mood).isEmpty)
+    }
+
+    func testUnassigningAFourGroupLeavesOtherGroupsIntact() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("lake.jpg")
+        try writeTestImage(to: throughout)
+        try store.assignWallpaper(throughout, to: .day, in: mood)
+        try store.assignWallpaper(throughout, to: .evening, in: mood)
+
+        try store.unassignWallpaper(throughout, from: .day, in: mood)
+
+        XCTAssertEqual(store.allDayWallpapers(in: mood).map(\.lastPathComponent), ["lake.jpg"])
+        XCTAssertTrue(store.wallpapers(for: .midday, in: mood).isEmpty)
+        XCTAssertTrue(store.wallpapers(for: .afternoon, in: mood).isEmpty)
+        XCTAssertEqual(
+            store.wallpapers(for: .goldenHour, in: mood).map(\.lastPathComponent),
+            ["lake.jpg"]
+        )
+        XCTAssertEqual(
+            store.effectiveWallpapers(for: .afternoon, in: mood).map(\.lastPathComponent),
+            ["lake.jpg"]
+        )
+    }
+
+    func testPlayThroughoutTheDayRemovesEveryTimeAssignmentForThatWallpaper() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("lake.jpg")
+        try writeTestImage(to: throughout)
+        try store.assignWallpaper(throughout, to: .morning, in: mood)
+        try store.assignWallpaper(throughout, to: .night, in: mood)
+
+        try store.playThroughoutTheDay(throughout, in: mood)
+
+        XCTAssertEqual(store.allDayWallpapers(in: mood).map(\.lastPathComponent), ["lake.jpg"])
+        for slot in TimeSlot.allCases {
+            XCTAssertTrue(store.wallpapers(for: slot, in: mood).isEmpty)
+        }
+    }
+
+    func testPlayThroughoutTheDayFromSlotCopyReusesPoolEntryAndIsIdempotent() throws {
+        // The Wallpapers grid hands over the slot copy's URL, not the pool URL.
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("lake.jpg")
+        try writeTestImage(to: throughout)
+        try store.assignWallpaper(throughout, to: .morning, in: mood)
+        let slotCopy = try XCTUnwrap(store.wallpapers(for: .dawn, in: mood).first)
+
+        try store.playThroughoutTheDay(slotCopy, in: mood)
+        try store.playThroughoutTheDay(throughout, in: mood)
+
+        XCTAssertEqual(store.allDayWallpapers(in: mood).map(\.lastPathComponent), ["lake.jpg"])
+        for slot in TimeSlot.allCases {
+            XCTAssertTrue(store.wallpapers(for: slot, in: mood).isEmpty)
+        }
+    }
+
+    func testSkipPeriodStateIsIndependentOfWallpaperAssignments() throws {
+        let store = makeStore()
+        let mood = try XCTUnwrap(store.create(name: "Calm"))
+        let throughout = store.allDayFolderURL(in: mood).appendingPathComponent("shared.jpg")
+        try writeTestImage(to: throughout)
+        try store.assignWallpaper(throughout, to: .night, in: mood)
+
+        HorizonScheduleDefaults.setSlotEnabled(false, slotID: TimeSlot.evening.slotID, defaults: defaults)
+        XCTAssertFalse(HorizonScheduleDefaults.isSlotEnabled(TimeSlot.evening.slotID, defaults: defaults))
+        XCTAssertEqual(
+            store.wallpapers(for: .evening, in: mood).map(\.lastPathComponent),
+            ["shared.jpg"]
+        )
+        HorizonScheduleDefaults.setSlotEnabled(true, slotID: TimeSlot.evening.slotID, defaults: defaults)
+        XCTAssertTrue(HorizonScheduleDefaults.isSlotEnabled(TimeSlot.evening.slotID, defaults: defaults))
+        XCTAssertEqual(
+            store.wallpapers(for: .evening, in: mood).map(\.lastPathComponent),
+            ["shared.jpg"]
+        )
+    }
+
+    private func folderFingerprint(in mood: Mood, store: MoodStore) throws -> [String: Int] {
+        var fingerprint: [String: Int] = [:]
+        let folders = [store.allDayFolderURL(in: mood)]
+            + TimeSlot.allCases.map { store.folderURL(for: $0, in: mood) }
+        for folder in folders {
+            let files = (try FileManager.default.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: [.fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ))
+            for file in files {
+                let size = (try file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                fingerprint[folder.lastPathComponent + "/" + file.lastPathComponent] = size
+            }
+        }
+        return fingerprint
     }
 }
