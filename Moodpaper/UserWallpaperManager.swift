@@ -135,8 +135,7 @@ class UserWallpaperManager: ObservableObject {
             .appendingPathComponent("Moodpaper") {
             baseURL = iCloudURL
         } else {
-            baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Moodpaper")
+            baseURL = LibraryMigration.defaultApplicationSupportLibraryRoot()
         }
 
         // Load global source from UserDefaults

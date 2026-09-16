@@ -2007,14 +2007,7 @@ extension WallpaperManager {
     }
 
     private func preparedWallpaperDirectory() throws -> URL {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = appSupport
-            .appendingPathComponent("Moodpaper", isDirectory: true)
+        let directory = LibraryMigration.defaultApplicationSupportLibraryRoot()
             .appendingPathComponent("PreparedWallpapers", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory

@@ -66,6 +66,11 @@ struct UserLibraryView: View {
         .onAppear {
             _ = store.ensurePlayableVibe()
         }
+        .onChange(of: store.usesCatalog) { _, usesCatalog in
+            // A completed library update retires the "update your library"
+            // delete notice that asked for it.
+            if usesCatalog { importStatus = nil }
+        }
         .onChange(of: store.activeMoodID) { _, _ in
             selectedURLs.removeAll()
             previewItem = nil

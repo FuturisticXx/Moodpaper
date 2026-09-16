@@ -393,6 +393,24 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(root.contains("updateLibrary()"), "only the prompt's button starts the update")
     }
 
+    /// The disposable-root launch override exists only in Debug builds, and
+    /// every Application Support lookup goes through the one resolver.
+    func testLibraryRootOverrideIsDebugOnlyAndResolverIsSingular() throws {
+        let migration = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),
+            encoding: .utf8
+        )
+        let overrideIndex = try XCTUnwrap(migration.range(of: "environment[libraryRootOverrideEnvironmentKey]")).lowerBound
+        let debugStart = try XCTUnwrap(migration.range(of: "#if DEBUG", range: migration.startIndex..<overrideIndex)).lowerBound
+        let debugEnd = try XCTUnwrap(migration.range(of: "#endif", range: overrideIndex..<migration.endIndex)).lowerBound
+        XCTAssertLessThan(debugStart, overrideIndex)
+        XCTAssertLessThan(overrideIndex, debugEnd)
+        for file in ["Moodpaper/WallpaperManager.swift", "Moodpaper/UserWallpaperManager.swift", "Moodpaper/MoodStore.swift"] {
+            let source = try String(contentsOf: repoRoot.appendingPathComponent(file), encoding: .utf8)
+            XCTAssertFalse(source.contains(".applicationSupportDirectory"), "\(file) must resolve through LibraryMigration")
+        }
+    }
+
     func testCatalogV2MigrationEngineExistsWithoutRetiringLegacyFolders() throws {
         let migration = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),

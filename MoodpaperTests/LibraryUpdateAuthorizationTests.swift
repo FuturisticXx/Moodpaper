@@ -334,4 +334,134 @@ final class LibraryUpdateAuthorizationTests: XCTestCase {
         try store.removeWallpaper(seeded.file, from: seeded.vibe)
         XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.file.path), "Remove from Vibe stays available")
     }
+
+    // MARK: - Stamping an already-complete migration is verified first
+
+    /// Completes a migration under authorization, then strips the record so
+    /// the next launch must ask, exactly like a pre-record production run.
+    private func completeUnrecordedMigration() throws -> (catalog: WallpaperCatalog, journal: LibraryMigration.Journal) {
+        try seedLegacyLibrary()
+        LibraryMigration.grantOneShotAuthorization(for: root)
+        _ = try LibraryMigration.migrateIfNeeded(libraryRoot: root)
+        var journal = try LibraryMigration.loadJournal(from: root)
+        journal.authorization = nil
+        try writeJournal(journal)
+        return (try LibraryMigration.loadCatalog(from: root), journal)
+    }
+
+    private func writeJournal(_ journal: LibraryMigration.Journal) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(journal).write(to: journalURL, options: .atomic)
+    }
+
+    /// Runs Update Library against damaged completed state and proves it is
+    /// refused: no record written, no evidence removed, legacy model kept,
+    /// calm failure surfaced.
+    private func assertStampRefused(_ reason: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let journalBefore = try Data(contentsOf: journalURL)
+        let catalogBefore = try Data(contentsOf: catalogURL)
+        let store = makeStore()
+        XCTAssertFalse(store.usesCatalog, reason, file: file, line: line)
+        XCTAssertTrue(store.needsLibraryUpdate, reason, file: file, line: line)
+        do {
+            try await store.updateLibrary()
+            XCTFail("\(reason): damaged completed state must be refused", file: file, line: line)
+        } catch let error as MoodStore.LibraryUpdateFailedError {
+            XCTAssertTrue(error.underlying is LibraryMigration.CompletedMigrationError, "\(reason): \(error.underlying)", file: file, line: line)
+            XCTAssertTrue(error.localizedDescription.contains("Your wallpapers and Vibes are unchanged"), file: file, line: line)
+        }
+        XCTAssertNil(try LibraryMigration.loadJournal(from: root).authorization, "\(reason): not stamped", file: file, line: line)
+        XCTAssertEqual(try Data(contentsOf: journalURL), journalBefore, "\(reason): journal untouched", file: file, line: line)
+        XCTAssertEqual(try Data(contentsOf: catalogURL), catalogBefore, "\(reason): catalog untouched", file: file, line: line)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: migrationRoot.path), "\(reason): evidence kept", file: file, line: line)
+        XCTAssertFalse(store.usesCatalog, "\(reason): stays on the legacy model", file: file, line: line)
+        XCTAssertTrue(store.needsLibraryUpdate, file: file, line: line)
+        XCTAssertFalse(LibraryMigration.hasOneShotAuthorization, file: file, line: line)
+        XCTAssertFalse(makeStore().usesCatalog, "\(reason): relaunch does not adopt", file: file, line: line)
+    }
+
+    func testStampingVerifiesEverythingBeforeRecordingAuthorization() throws {
+        let state = try completeUnrecordedMigration()
+        let verified = try LibraryMigration.verifyCompletedMigration(libraryRoot: root)
+        XCTAssertEqual(verified.catalog, state.catalog)
+        XCTAssertEqual(verified.journal.runID, state.journal.runID)
+        XCTAssertEqual(state.journal.phase, .complete)
+        XCTAssertNotNil(state.journal.backupFolderName)
+    }
+
+    func testStampRefusedWhenCanonicalAssetIsMissing() async throws {
+        let state = try completeUnrecordedMigration()
+        let asset = try XCTUnwrap(state.catalog.assets.first)
+        try FileManager.default.removeItem(at: LibraryMigration.canonicalURL(for: asset, libraryRoot: root))
+        try await assertStampRefused("missing canonical asset")
+    }
+
+    func testStampRefusedWhenCanonicalAssetHashMismatches() async throws {
+        let state = try completeUnrecordedMigration()
+        let asset = try XCTUnwrap(state.catalog.assets.first)
+        try Data("damaged".utf8).write(to: LibraryMigration.canonicalURL(for: asset, libraryRoot: root))
+        try await assertStampRefused("hash mismatch")
+    }
+
+    func testStampRefusedWhenBackupIsMissing() async throws {
+        let state = try completeUnrecordedMigration()
+        let backup = WallpaperCatalogFile.backupsRoot(in: root)
+            .appendingPathComponent(try XCTUnwrap(state.journal.backupFolderName))
+        try FileManager.default.removeItem(at: backup)
+        try await assertStampRefused("missing backup")
+    }
+
+    func testStampRefusedWhenJournalAndCatalogDisagree() async throws {
+        var journal = try completeUnrecordedMigration().journal
+        for key in journal.sourcePathToAssetID.keys {
+            journal.sourcePathToAssetID[key] = UUID().uuidString.lowercased()
+        }
+        try writeJournal(journal)
+        try await assertStampRefused("journal mapping mismatch")
+    }
+
+    func testStampRefusedWhenJournalIsNotComplete() async throws {
+        var journal = try completeUnrecordedMigration().journal
+        journal.phase = .catalogStaged
+        try writeJournal(journal)
+        // A staged journal with a ready catalog is inconsistent state, not a
+        // resumable migration: catalog.json only exists after `complete`.
+        try await assertStampRefused("journal not complete")
+    }
+
+    /// A catalog at an unsupported version is never ready: ordinary launches
+    /// ignore it and nothing is stamped or rewritten until the user asks.
+    /// An explicit update then rebuilds from the legacy folders, which stay
+    /// the source of truth until a catalog is adopted.
+    func testUnsupportedCatalogIsNeverAdoptedOrStampedWithoutExplicitUpdate() async throws {
+        var catalog = try completeUnrecordedMigration().catalog
+        catalog.migrationVersion = LibraryMigration.migrationVersion + 1
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(catalog).write(to: catalogURL, options: .atomic)
+        let catalogBefore = try Data(contentsOf: catalogURL)
+        let journalBefore = try Data(contentsOf: journalURL)
+
+        let launch = makeStore()
+        XCTAssertFalse(launch.usesCatalog)
+        XCTAssertTrue(launch.needsLibraryUpdate)
+        XCTAssertEqual(try Data(contentsOf: catalogURL), catalogBefore)
+        XCTAssertEqual(try Data(contentsOf: journalURL), journalBefore)
+        XCTAssertNil(try LibraryMigration.loadJournal(from: root).authorization)
+        XCTAssertFalse(makeStore().usesCatalog)
+
+        let summary = try await launch.updateLibrary()
+        XCTAssertFalse(summary.alreadyComplete, "rebuilt from legacy, not stamped as-is")
+        XCTAssertTrue(launch.usesCatalog)
+        XCTAssertEqual(try LibraryMigration.loadJournal(from: root).authorization, .user)
+    }
+
+    func testStampRefusedWhenLegacyFilesAreNotCatalogued() async throws {
+        let state = try completeUnrecordedMigration()
+        let vibeID = try XCTUnwrap(state.catalog.memberships.first?.moodID)
+        try writePNG(to: root.appendingPathComponent("Moods/\(vibeID)/AllDay/added-later.png"))
+        try await assertStampRefused("uncatalogued legacy file")
+    }
 }

@@ -20,6 +20,7 @@ final class CatalogV2MigrationTests: XCTestCase {
         LibraryMigration.testInterruptAfterPhase = nil
         LibraryMigration.testCorruptStagingBeforeValidation = false
         LibraryMigration.testLiveLibraryRoot = nil
+        LibraryMigration.testUnloadableLibraryRoot = nil
         LibraryMigration.environmentProvider = { [:] }
     }
 
@@ -27,6 +28,7 @@ final class CatalogV2MigrationTests: XCTestCase {
         LibraryMigration.testInterruptAfterPhase = nil
         LibraryMigration.testCorruptStagingBeforeValidation = false
         LibraryMigration.testLiveLibraryRoot = nil
+        LibraryMigration.testUnloadableLibraryRoot = nil
         LibraryMigration.environmentProvider = { ProcessInfo.processInfo.environment }
         try? FileManager.default.removeItem(at: libraryRoot)
         defaults.removePersistentDomain(forName: suiteName)
@@ -939,5 +941,42 @@ final class CatalogV2MigrationTests: XCTestCase {
         XCTAssertEqual(store.dayPartRepresentation(for: .day, in: calm), .usingVibePhotos)
         XCTAssertEqual(store.dayPartWallpaperURLs(for: .day, in: calm), [])
         XCTAssertEqual(store.allDayWallpapers(in: calm).count, 2)
+    }
+
+    // MARK: - Test-host rule blocks writes, not only reads
+
+    /// A store the test-host rule refused to load holds no Vibes and must
+    /// not write anything: the interface's `ensurePlayableVibe` on appear
+    /// once erased a real moods.json this way.
+    func testUnloadedLiveLibraryStoreRefusesEveryWrite() throws {
+        let existing = makeStore()
+        let optimistic = try XCTUnwrap(existing.create(name: "Optimistic"))
+        try writePNG(to: existing.allDayFolderURL(in: optimistic).appendingPathComponent("sky.png"))
+        let moodsJSON = libraryRoot.appendingPathComponent("Moods/moods.json")
+        let before = try Data(contentsOf: moodsJSON)
+        let filesBefore = try FileManager.default.subpathsOfDirectory(atPath: libraryRoot.path).sorted()
+
+        LibraryMigration.testUnloadableLibraryRoot = libraryRoot
+        XCTAssertTrue(LibraryMigration.testHostMustNotLoadLibrary(at: libraryRoot))
+        let blocked = makeStore()
+        XCTAssertTrue(blocked.isLibraryAccessBlocked)
+        XCTAssertTrue(blocked.moods.isEmpty, "nothing was loaded")
+
+        XCTAssertNil(blocked.ensurePlayableVibe(), "must not invent a Vibe")
+        XCTAssertNil(blocked.create(name: "Accident"))
+        blocked.setWallpapersPerDay(3, for: optimistic)
+        blocked.rename(optimistic, to: "Renamed")
+        XCTAssertThrowsError(try blocked.ensureCatalog())
+        XCTAssertTrue(blocked.moods.isEmpty)
+
+        XCTAssertEqual(try Data(contentsOf: moodsJSON), before, "moods.json untouched")
+        XCTAssertEqual(try FileManager.default.subpathsOfDirectory(atPath: libraryRoot.path).sorted(), filesBefore)
+        XCTAssertNil(defaults.string(forKey: MoodStore.activeMoodIDKey) == optimistic.id ? nil : defaults.string(forKey: MoodStore.activeMoodIDKey))
+
+        // Lifting the rule restores normal behavior on the same data.
+        LibraryMigration.testUnloadableLibraryRoot = nil
+        let normal = makeStore()
+        XCTAssertFalse(normal.isLibraryAccessBlocked)
+        XCTAssertEqual(normal.moods.map(\.name), ["Optimistic"])
     }
 }

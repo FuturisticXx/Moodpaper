@@ -88,9 +88,9 @@ final class MoodStoreTests: XCTestCase {
         XCTAssertEqual(store.activeMoodID, vibe.id)
     }
 
-    func testEnsurePlayableVibeCreatesUnnamedDefaultWhenCatalogIsEmpty() {
+    func testEnsurePlayableVibeCreatesUnnamedDefaultWhenCatalogIsEmpty() throws {
         let store = makeStore()
-        let vibe = store.ensurePlayableVibe()
+        let vibe = try XCTUnwrap(store.ensurePlayableVibe())
         XCTAssertTrue(vibe.isUnnamed)
         XCTAssertEqual(store.moods.count, 1)
         XCTAssertEqual(store.activeMoodID, vibe.id)

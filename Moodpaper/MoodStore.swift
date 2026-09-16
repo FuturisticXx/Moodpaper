@@ -83,6 +83,11 @@ final class MoodStore: ObservableObject {
         "jpg", "jpeg", "png", "heic", "heif", "tiff", "bmp"
     ]
 
+    /// True when the test-host rule refused to load this library. The store
+    /// then holds no Vibes and must never write: an empty `moods` array is
+    /// not a fact about the library, and saving it would erase moods.json.
+    private(set) var isLibraryAccessBlocked = false
+
     @Published private(set) var moods: [Mood] = []
     @Published private(set) var activeMoodID: String? = nil
     /// Catalog v2 when migration (or first catalog-backed import) has completed.
@@ -132,6 +137,7 @@ final class MoodStore: ObservableObject {
         let base = baseURL ?? LibraryMigration.resolvedLiveLibraryRoot()
         self.moodsRootURL = base.appendingPathComponent("Moods")
         if LibraryMigration.testHostMustNotLoadLibrary(at: base) {
+            isLibraryAccessBlocked = true
             return
         }
         load()
@@ -161,8 +167,10 @@ final class MoodStore: ObservableObject {
     /// Re-read the catalog after files changed underneath the store.
     func reload() {
         if LibraryMigration.testHostMustNotLoadLibrary(at: storageRootURL) {
+            isLibraryAccessBlocked = true
             return
         }
+        isLibraryAccessBlocked = false
         load()
         adoptCatalogIfNeeded()
         migrateVibeCadencesIfNeeded()
@@ -273,6 +281,7 @@ final class MoodStore: ObservableObject {
     /// naming a style first. New Vibes inherit the Settings default cadence.
     @discardableResult
     func create(name: String) -> Mood? {
+        guard !isLibraryAccessBlocked else { return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let mood = Mood(
             id: UUID().uuidString.lowercased(),
@@ -298,7 +307,7 @@ final class MoodStore: ObservableObject {
     /// Reuses the active Vibe, otherwise the first catalog entry, otherwise
     /// creates an unnamed default.
     @discardableResult
-    func ensurePlayableVibe() -> Mood {
+    func ensurePlayableVibe() -> Mood? {
         if let activeMood {
             return activeMood
         }
@@ -306,7 +315,7 @@ final class MoodStore: ObservableObject {
             activate(first)
             return first
         }
-        return create(name: "")!
+        return create(name: "")
     }
 
     func rename(_ mood: Mood, to name: String) {
@@ -885,6 +894,10 @@ final class MoodStore: ObservableObject {
     }
 
     private func save() {
+        guard !isLibraryAccessBlocked else {
+            print("[MoodStore] Refusing to write moods.json: library was never loaded")
+            return
+        }
         do {
             let data = try JSONEncoder().encode(moods)
             try data.write(to: metadataURL)
@@ -1023,7 +1036,9 @@ final class MoodStore: ObservableObject {
     /// never written anywhere.
     @discardableResult
     func updateLibrary() async throws -> LibraryMigration.Summary {
-        guard !isUpdatingLibrary else { throw LibraryUpdateFailedError(underlying: CancellationError()) }
+        guard !isUpdatingLibrary, !isLibraryAccessBlocked else {
+            throw LibraryUpdateFailedError(underlying: LibraryMigration.MigrationBlockedError())
+        }
         isUpdatingLibrary = true
         let root = storageRootURL
         LibraryMigration.grantOneShotAuthorization(for: root)
@@ -1050,12 +1065,15 @@ final class MoodStore: ObservableObject {
     /// blocked; catalog-only operations go through `ensureCatalog` and fail
     /// closed instead.
     private func ensureCatalogUnlessMigrationBlocked() throws {
-        if LibraryMigration.isMigrationBlocked(for: storageRootURL) { return }
+        if isLibraryAccessBlocked || LibraryMigration.isMigrationBlocked(for: storageRootURL) { return }
         try ensureCatalog()
     }
 
     func ensureCatalog() throws {
         if usesCatalog { return }
+        if isLibraryAccessBlocked {
+            throw LibraryMigration.MigrationBlockedError()
+        }
         if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
             throw LibraryMigration.MigrationBlockedError()
         }
@@ -1075,7 +1093,7 @@ final class MoodStore: ObservableObject {
     }
 
     private func persistCatalog() throws {
-        guard let catalog else { return }
+        guard let catalog, !isLibraryAccessBlocked else { return }
         if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
             throw LibraryMigration.MigrationBlockedError()
         }

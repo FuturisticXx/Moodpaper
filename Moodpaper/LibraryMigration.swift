@@ -46,8 +46,21 @@ enum LibraryMigration {
         var errorDescription: String? { LibraryMigration.blockedDiagnostic }
     }
 
+    /// Debug-only launch override so a developer can point a UI build at a
+    /// disposable library instead of the real one. Release builds ignore it.
+    /// The override becomes this process's default root and is protected by
+    /// the migration guard exactly like a production root.
+    static let libraryRootOverrideEnvironmentKey = "MOODPAPER_LIBRARY_ROOT"
+
+    /// The one place the app resolves `Application Support/Moodpaper`.
     static func defaultApplicationSupportLibraryRoot() -> URL {
-        FileManager.default
+        #if DEBUG
+        if let override = ProcessInfo.processInfo.environment[libraryRootOverrideEnvironmentKey],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        #endif
+        return FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Moodpaper")
     }
@@ -172,8 +185,17 @@ enum LibraryMigration {
             || NSClassFromString("XCTestCase") != nil
     }
 
+    /// Test-only: an extra root the test-host rule treats as unloadable, so
+    /// the rule itself can be exercised on a disposable folder.
+    static var testUnloadableLibraryRoot: URL?
+
     static func testHostMustNotLoadLibrary(at libraryRoot: URL) -> Bool {
-        isRunningInTestHost && matches(libraryRoot, anyOf: liveLibraryRoots())
+        guard isRunningInTestHost else { return false }
+        var roots = liveLibraryRoots()
+        if let testUnloadableLibraryRoot {
+            roots.append(testUnloadableLibraryRoot)
+        }
+        return matches(libraryRoot, anyOf: roots)
     }
 
     enum JournalPhase: String, Codable {
@@ -235,11 +257,14 @@ enum LibraryMigration {
         if let catalog = try? loadCatalog(from: libraryRoot), catalog.isReady {
             // A catalog completed before authorization was journaled (or by
             // an authorized run that predates the field) is stamped now so
-            // later launches can adopt it without asking again.
+            // later launches can adopt it without asking again. Only a
+            // completed migration that still passes the Phase 6A validator
+            // earns the record; damaged or inconsistent state is refused
+            // and left exactly as found.
             if let authorization,
                var journal = try? loadJournal(from: libraryRoot),
-               journal.phase == .complete,
                journal.authorization == nil {
+                try verifyCompletedMigration(libraryRoot: libraryRoot)
                 journal.authorization = authorization
                 try checkpoint(&journal, phase: .complete, libraryRoot: libraryRoot)
             }
@@ -328,6 +353,74 @@ enum LibraryMigration {
             // Leave any incomplete catalog.json unpublished; never delete Moods/.
             throw error
         }
+    }
+
+    struct CompletedMigrationError: LocalizedError {
+        let reason: String
+        var errorDescription: String? { "Completed migration failed verification: \(reason)" }
+    }
+
+    /// Everything a completed migration must still satisfy before it may be
+    /// recorded as authorized: journal complete at the current versions, a
+    /// ready catalog at the current versions, the journal's asset mapping and
+    /// the catalog agreeing with each other, the backup the run recorded
+    /// still on disk with its Moods copy, and the full Phase 6A validation
+    /// (every legacy file accounted for, every canonical file present with a
+    /// matching hash, no duplicate identities, memberships pointing at real
+    /// assets and Vibes).
+    @discardableResult
+    static func verifyCompletedMigration(libraryRoot: URL) throws -> (catalog: WallpaperCatalog, journal: Journal) {
+        let journal: Journal
+        do {
+            journal = try loadJournal(from: libraryRoot)
+        } catch {
+            throw CompletedMigrationError(reason: "journal missing or unreadable")
+        }
+        guard journal.phase == .complete else {
+            throw CompletedMigrationError(reason: "journal phase is \(journal.phase.rawValue)")
+        }
+        guard journal.migrationVersion == migrationVersion, journal.schemaVersion == schemaVersion else {
+            throw CompletedMigrationError(reason: "journal versions are not supported")
+        }
+        let catalog: WallpaperCatalog
+        do {
+            catalog = try loadCatalog(from: libraryRoot)
+        } catch {
+            throw CompletedMigrationError(reason: "catalog missing or unreadable")
+        }
+        guard catalog.isReady else {
+            throw CompletedMigrationError(reason: "catalog is not ready")
+        }
+
+        let catalogIDs = Set(catalog.assets.map(\.id))
+        let journalIDs = Set(journal.sourcePathToAssetID.values)
+        guard journalIDs == catalogIDs else {
+            throw CompletedMigrationError(reason: "journal and catalog disagree on assets")
+        }
+        for (sourcePath, assetID) in journal.sourcePathToAssetID {
+            guard let asset = catalog.asset(id: assetID), asset.legacySourcePaths.contains(sourcePath) else {
+                throw CompletedMigrationError(reason: "journal source mapping does not match catalog")
+            }
+        }
+
+        guard let backupName = journal.backupFolderName else {
+            throw CompletedMigrationError(reason: "journal records no backup")
+        }
+        let backupMoods = WallpaperCatalogFile.backupsRoot(in: libraryRoot)
+            .appendingPathComponent(backupName, isDirectory: true)
+            .appendingPathComponent("Moods", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: backupMoods.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw CompletedMigrationError(reason: "backup folder is missing")
+        }
+
+        do {
+            try validate(catalog, libraryRoot: libraryRoot, assetsRoot: WallpaperCatalogFile.assetsRoot(in: libraryRoot))
+        } catch {
+            throw CompletedMigrationError(reason: error.localizedDescription)
+        }
+        return (catalog, journal)
     }
 
     static func loadCatalog(from libraryRoot: URL) throws -> WallpaperCatalog {
