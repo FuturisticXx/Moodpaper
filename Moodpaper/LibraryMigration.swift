@@ -98,10 +98,63 @@ enum LibraryMigration {
     }
 
     /// True only when the launch environment names this exact root.
+    /// Who authorized a migration. Recorded in the journal so a catalog that
+    /// was published under explicit authorization can be adopted on later
+    /// launches without asking again; a catalog with no such record (for
+    /// example one written by a pre-guard build) stays unadopted.
+    enum AuthorizationSource: String, Codable {
+        /// Development and test launches: `MOODPAPER_AUTHORIZE_CATALOG_MIGRATION`.
+        case environment
+        /// The user confirmed the in-app library update.
+        case user
+    }
+
+    /// One-shot, process-memory authorization created only after the user
+    /// confirms the in-app library update. Bound to one exact resolved root,
+    /// never persisted anywhere, and consumed by the next migration attempt
+    /// whether it succeeds or fails.
+    private static var oneShotAuthorizedRootPath: String?
+
+    static func grantOneShotAuthorization(for libraryRoot: URL) {
+        oneShotAuthorizedRootPath = comparablePath(libraryRoot)
+    }
+
+    static func clearOneShotAuthorization() {
+        oneShotAuthorizedRootPath = nil
+    }
+
+    static var hasOneShotAuthorization: Bool {
+        oneShotAuthorizedRootPath != nil
+    }
+
+    /// The active authorization for this exact root, if any. Both mechanisms
+    /// converge here; the migration engine never asks anything else.
+    static func authorizationSource(for libraryRoot: URL) -> AuthorizationSource? {
+        let candidate = comparablePath(libraryRoot)
+        if let raw = environmentProvider()[authorizationEnvironmentKey], !raw.isEmpty,
+           comparablePath(URL(fileURLWithPath: raw)) == candidate {
+            return .environment
+        }
+        if let oneShot = oneShotAuthorizedRootPath, oneShot == candidate {
+            return .user
+        }
+        return nil
+    }
+
     static func isMigrationAuthorized(for libraryRoot: URL) -> Bool {
-        guard let raw = environmentProvider()[authorizationEnvironmentKey],
-              !raw.isEmpty else { return false }
-        return comparablePath(URL(fileURLWithPath: raw)) == comparablePath(libraryRoot)
+        authorizationSource(for: libraryRoot) != nil
+    }
+
+    /// A published catalog may be adopted when the root is not protected,
+    /// when the launch is authorized, or when the journal records that the
+    /// completed migration was explicitly authorized.
+    static func canAdoptPublishedCatalog(at libraryRoot: URL) -> Bool {
+        if !isProtectedLibraryRoot(libraryRoot) { return true }
+        if isMigrationAuthorized(for: libraryRoot) { return true }
+        guard let journal = try? loadJournal(from: libraryRoot) else { return false }
+        return journal.phase == .complete
+            && journal.authorization != nil
+            && journal.migrationVersion == migrationVersion
     }
 
     /// The single decision every migration, adoption, and publish path asks.
@@ -143,6 +196,8 @@ enum LibraryMigration {
         var lastError: String?
         var startedAt: Date
         var updatedAt: Date
+        /// Absent on journals written before the authorization guard.
+        var authorization: AuthorizationSource?
     }
 
     struct Summary: Equatable {
@@ -170,11 +225,24 @@ enum LibraryMigration {
 
     @discardableResult
     static func migrateIfNeeded(libraryRoot: URL) throws -> Summary {
+        // A one-shot authorization is consumed by this attempt, success or not.
+        defer { clearOneShotAuthorization() }
         if isMigrationBlocked(for: libraryRoot) {
             print("[LibraryMigration] \(blockedDiagnostic)")
             throw MigrationBlockedError()
         }
+        let authorization = authorizationSource(for: libraryRoot)
         if let catalog = try? loadCatalog(from: libraryRoot), catalog.isReady {
+            // A catalog completed before authorization was journaled (or by
+            // an authorized run that predates the field) is stamped now so
+            // later launches can adopt it without asking again.
+            if let authorization,
+               var journal = try? loadJournal(from: libraryRoot),
+               journal.phase == .complete,
+               journal.authorization == nil {
+                journal.authorization = authorization
+                try checkpoint(&journal, phase: .complete, libraryRoot: libraryRoot)
+            }
             return Summary(
                 assetCount: catalog.assets.count,
                 membershipCount: catalog.memberships.count,
@@ -198,8 +266,12 @@ enum LibraryMigration {
             sourcePathToAssetID: [:],
             lastError: nil,
             startedAt: Date(),
-            updatedAt: Date()
+            updatedAt: Date(),
+            authorization: authorization
         )
+        if journal.authorization == nil {
+            journal.authorization = authorization
+        }
         let resumed = journal.phase != .started || journal.backupFolderName != nil
         try checkpoint(&journal, phase: .started, libraryRoot: libraryRoot)
 

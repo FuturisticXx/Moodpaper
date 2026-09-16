@@ -696,10 +696,17 @@ final class CatalogV2MigrationTests: XCTestCase {
 
         LibraryMigration.environmentProvider = { [:] }
         XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root))
-        // Only a second migration would need the authorization again; the
-        // already-published catalog stays unreadable to an unauthorized
-        // launch on the protected root.
-        XCTAssertNil(MoodStore(baseURL: root, defaults: defaults).catalog)
+        // The completed, authorized catalog is adopted on later launches, but
+        // nothing persisted can authorize a *migration*: with the catalog
+        // gone, a relaunch is blocked again and writes nothing.
+        XCTAssertNotNil(MoodStore(baseURL: root, defaults: defaults).catalog)
+        try FileManager.default.removeItem(at: WallpaperCatalogFile.catalogURL(in: root))
+        let journalBefore = try Data(contentsOf: WallpaperCatalogFile.journalURL(in: root))
+        let relaunch = MoodStore(baseURL: root, defaults: defaults)
+        XCTAssertNil(relaunch.catalog)
+        XCTAssertTrue(relaunch.needsLibraryUpdate)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: WallpaperCatalogFile.catalogURL(in: root).path))
+        XCTAssertEqual(try Data(contentsOf: WallpaperCatalogFile.journalURL(in: root)), journalBefore)
     }
 
     /// Negative test against the user's actual library root. Read-only by
@@ -718,6 +725,7 @@ final class CatalogV2MigrationTests: XCTestCase {
         )
 
         XCTAssertTrue(real.path.hasSuffix("/Library/Application Support/Moodpaper"))
+        XCTAssertFalse(LibraryMigration.hasOneShotAuthorization)
         XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(real))
         XCTAssertTrue(LibraryMigration.isProtectedLibraryRoot(processDefault))
         XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: real))
@@ -861,5 +869,75 @@ final class CatalogV2MigrationTests: XCTestCase {
         let canonical = try XCTUnwrap(adopted.resolvePlaybackURL(forIdentifier: legacyFile.path))
         XCTAssertTrue(adopted.isCatalogAssetPath(canonical.path))
         XCTAssertNil(adopted.resolvePlaybackURL(forIdentifier: libraryRoot.appendingPathComponent("missing.png").path))
+    }
+
+    // MARK: - Shape My Day group wallpapers
+
+    private func shapeMyDayFixture() throws -> (store: MoodStore, calm: Mood, lake: URL, forest: URL) {
+        let store = makeStore()
+        let calm = try XCTUnwrap(store.create(name: "Calm"))
+        let lake = store.allDayFolderURL(in: calm).appendingPathComponent("lake.png")
+        let forest = store.allDayFolderURL(in: calm).appendingPathComponent("forest.png")
+        try writePNG(to: lake)
+        try writePNG(to: forest, color: CGColor(red: 0.1, green: 0.8, blue: 0.2, alpha: 1))
+        try store.assignWallpaper(lake, to: .morning, in: calm)
+        let dawnCopy = try XCTUnwrap(store.wallpapers(for: .dawn, in: calm).first)
+        try store.removeWallpaperAssignment(dawnCopy, from: .dawn, in: calm)
+        try store.assignWallpaper(forest, to: .night, in: calm)
+        return (store, calm, lake, forest)
+    }
+
+    private func isLoadableImage(_ url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil) != nil
+    }
+
+    func testDayPartWallpaperURLsLegacyModeReturnOnePhysicalCopyPerWallpaper() throws {
+        let fixture = try shapeMyDayFixture()
+        let store = fixture.store
+        XCTAssertFalse(store.usesCatalog)
+
+        XCTAssertEqual(store.dayPartRepresentation(for: .night, in: fixture.calm), .assigned(filenames: ["forest.png"]))
+        let night = store.dayPartWallpaperURLs(for: .night, in: fixture.calm)
+        XCTAssertEqual(night.map(\.lastPathComponent), ["forest.png"])
+        XCTAssertTrue(night[0].path.contains("/Moods/\(fixture.calm.id)/Evening/"))
+        XCTAssertTrue(isLoadableImage(night[0]))
+
+        XCTAssertEqual(store.dayPartRepresentation(for: .morning, in: fixture.calm), .mixed)
+        let morning = store.dayPartWallpaperURLs(for: .morning, in: fixture.calm)
+        XCTAssertEqual(morning.map(\.lastPathComponent), ["lake.png"], "three period copies collapse to one entry")
+
+        XCTAssertEqual(store.dayPartRepresentation(for: .day, in: fixture.calm), .usingVibePhotos)
+        XCTAssertEqual(store.dayPartWallpaperURLs(for: .day, in: fixture.calm), [])
+    }
+
+    func testDayPartWallpaperURLsCatalogModeReturnCanonicalFilesForAssignedGroups() throws {
+        let fixture = try shapeMyDayFixture()
+        _ = try LibraryMigration.migrateIfNeeded(libraryRoot: libraryRoot)
+        let store = makeStore()
+        XCTAssertTrue(store.usesCatalog)
+        let calm = try XCTUnwrap(store.mood(id: fixture.calm.id))
+
+        // Assigned: the representation still names the original file, and the
+        // URLs are the canonical assets the thumbnails can actually load.
+        XCTAssertEqual(store.dayPartRepresentation(for: .night, in: calm), .assigned(filenames: ["forest.png"]))
+        let night = store.dayPartWallpaperURLs(for: .night, in: calm)
+        XCTAssertEqual(night.count, 1)
+        XCTAssertTrue(store.isCatalogAssetPath(night[0].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: night[0].path))
+        XCTAssertTrue(isLoadableImage(night[0]))
+        XCTAssertEqual(try WallpaperIdentity.sha256Hex(of: night[0]), try WallpaperIdentity.sha256Hex(of: fixture.forest))
+        XCTAssertNotEqual(night[0].lastPathComponent, "forest.png", "identity is the asset, not the filename")
+
+        // Mixed stays Mixed and still resolves to the one canonical asset.
+        XCTAssertEqual(store.dayPartRepresentation(for: .morning, in: calm), .mixed)
+        let morning = store.dayPartWallpaperURLs(for: .morning, in: calm)
+        XCTAssertEqual(morning.count, 1)
+        XCTAssertEqual(try WallpaperIdentity.sha256Hex(of: morning[0]), try WallpaperIdentity.sha256Hex(of: fixture.lake))
+
+        // Using Vibe photos: no group URLs; the view ghosts the Vibe pool.
+        XCTAssertEqual(store.dayPartRepresentation(for: .day, in: calm), .usingVibePhotos)
+        XCTAssertEqual(store.dayPartWallpaperURLs(for: .day, in: calm), [])
+        XCTAssertEqual(store.allDayWallpapers(in: calm).count, 2)
     }
 }

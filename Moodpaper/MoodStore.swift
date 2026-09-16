@@ -88,6 +88,29 @@ final class MoodStore: ObservableObject {
     /// Catalog v2 when migration (or first catalog-backed import) has completed.
     private(set) var catalog: WallpaperCatalog?
 
+    /// True when this library has legacy data (or an unadopted catalog) on a
+    /// protected root and needs the user's explicit go-ahead to migrate.
+    @Published private(set) var needsLibraryUpdate = false
+    /// Set when a catalog-only action (Delete from Moodpaper) needs the
+    /// library update first; the window presents the update prompt.
+    @Published var isLibraryUpdateRequested = false
+    @Published private(set) var isUpdatingLibrary = false
+
+    /// Calm user-facing errors; the developer guard diagnostic never reaches
+    /// the interface through these.
+    struct LibraryUpdateRequiredError: LocalizedError {
+        var errorDescription: String? {
+            "Update your wallpaper library to delete photos from Moodpaper."
+        }
+    }
+
+    struct LibraryUpdateFailedError: LocalizedError {
+        let underlying: Error
+        var errorDescription: String? {
+            "Moodpaper couldn't update the wallpaper library. Your wallpapers and Vibes are unchanged."
+        }
+    }
+
     /// Fired whenever the active mood actually changes (activate, or the
     /// fallback after deleting the active mood). The engine subscribes so a
     /// mood switch refreshes the desktop immediately; the store owns the
@@ -497,6 +520,12 @@ final class MoodStore: ObservableObject {
 
     /// Destroy the asset and every Vibe membership / assignment.
     func deleteWallpaperFromMoodpaper(_ url: URL) throws {
+        if !usesCatalog, LibraryMigration.isMigrationBlocked(for: storageRootURL) {
+            // Deleting from Moodpaper is a catalog operation. Ask for the
+            // library update instead of inventing a second legacy delete.
+            isLibraryUpdateRequested = true
+            throw LibraryUpdateRequiredError()
+        }
         try ensureCatalog()
         guard var catalog, let asset = resolveAsset(for: url) else {
             throw NSError(domain: "MoodStore", code: 2, userInfo: [
@@ -601,6 +630,36 @@ final class MoodStore: ObservableObject {
             return .assigned(filenames: first.sorted())
         }
         return .mixed
+    }
+
+    /// The wallpapers assigned anywhere in a group, one entry per wallpaper,
+    /// as URLs the interface can load. Catalog mode returns canonical files
+    /// keyed by asset identity; legacy mode returns one physical copy per
+    /// filename. Empty when the group is using Vibe photos.
+    func dayPartWallpaperURLs(for group: DayPartGroup, in mood: Mood) -> [URL] {
+        if usesCatalog, let catalog {
+            var seen = Set<String>()
+            var assets: [WallpaperAsset] = []
+            for membership in catalog.memberships(forMoodID: mood.id)
+            where group.slots.contains(where: { membership.includes(slot: $0) }) {
+                guard seen.insert(membership.assetID).inserted,
+                      let asset = catalog.asset(id: membership.assetID) else { continue }
+                assets.append(asset)
+            }
+            return assets
+                .sorted { $0.originalFilename.localizedStandardCompare($1.originalFilename) == .orderedAscending }
+                .map { LibraryMigration.canonicalURL(for: $0, libraryRoot: storageRootURL) }
+        }
+        var seen = Set<String>()
+        var urls: [URL] = []
+        for slot in group.slots {
+            for url in wallpapers(for: slot, in: mood) where seen.insert(url.lastPathComponent).inserted {
+                urls.append(url)
+            }
+        }
+        return urls.sorted {
+            $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+        }
     }
 
     /// Copies a wallpaper into every detailed period in the group. The source
@@ -924,22 +983,66 @@ final class MoodStore: ObservableObject {
     /// a stale catalog.json is ignored and the store stays on the legacy
     /// Moods model.
     private func adoptCatalogIfNeeded() {
-        if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
+        if let loaded = try? LibraryMigration.loadCatalog(from: storageRootURL), loaded.isReady {
+            if LibraryMigration.canAdoptPublishedCatalog(at: storageRootURL) {
+                catalog = loaded
+                needsLibraryUpdate = false
+                return
+            }
+            // A catalog nobody explicitly authorized (for example one written
+            // by a pre-guard build) is ignored until the user approves.
             catalog = nil
+            needsLibraryUpdate = true
             print("[MoodStore] \(LibraryMigration.blockedDiagnostic)")
             return
         }
-        if let loaded = try? LibraryMigration.loadCatalog(from: storageRootURL), loaded.isReady {
-            catalog = loaded
+        guard LibraryMigration.needsMigration(libraryRoot: storageRootURL) else {
+            needsLibraryUpdate = false
             return
         }
-        guard LibraryMigration.needsMigration(libraryRoot: storageRootURL) else { return }
+        if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
+            catalog = nil
+            needsLibraryUpdate = true
+            print("[MoodStore] \(LibraryMigration.blockedDiagnostic)")
+            return
+        }
+        needsLibraryUpdate = false
         do {
             _ = try LibraryMigration.migrateIfNeeded(libraryRoot: storageRootURL)
             catalog = try LibraryMigration.loadCatalog(from: storageRootURL)
         } catch {
             print("[MoodStore] Catalog migration deferred: \(error.localizedDescription)")
             catalog = nil
+        }
+    }
+
+    /// The in-app library update: a one-shot authorization for this exact
+    /// root, consumed by a single run of the Phase 6A migration engine
+    /// (backup, staging, validation, publish), then adoption. The
+    /// authorization is cleared whether the run succeeds or fails and is
+    /// never written anywhere.
+    @discardableResult
+    func updateLibrary() async throws -> LibraryMigration.Summary {
+        guard !isUpdatingLibrary else { throw LibraryUpdateFailedError(underlying: CancellationError()) }
+        isUpdatingLibrary = true
+        let root = storageRootURL
+        LibraryMigration.grantOneShotAuthorization(for: root)
+        defer {
+            LibraryMigration.clearOneShotAuthorization()
+            isUpdatingLibrary = false
+        }
+        do {
+            let summary = try await Task.detached(priority: .userInitiated) {
+                try LibraryMigration.migrateIfNeeded(libraryRoot: root)
+            }.value
+            adoptCatalogIfNeeded()
+            isLibraryUpdateRequested = false
+            objectWillChange.send()
+            return summary
+        } catch {
+            print("[MoodStore] Library update failed: \(error.localizedDescription)")
+            adoptCatalogIfNeeded()
+            throw LibraryUpdateFailedError(underlying: error)
         }
     }
 

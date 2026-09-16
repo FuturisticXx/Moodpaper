@@ -250,7 +250,10 @@ private enum SettingsHostPage: Equatable {
 
 struct HorizonSettingsRootView: View {
     @EnvironmentObject private var wallpaperManager: WallpaperManager
+    @ObservedObject private var moodStore = MoodStore.shared
     @StateObject private var scheduleSettings = HorizonScheduleSettings()
+    /// Not Now is remembered only for this session; nothing is written.
+    @State private var dismissedLibraryUpdate = false
     @AppStorage(HorizonSettingsSection.selectedSectionKey) private var persistedSection = "dashboard"
     @State private var selectedSection: HorizonSettingsSection?
     @State private var settingsHostPage: SettingsHostPage = .root
@@ -290,6 +293,29 @@ struct HorizonSettingsRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .navigateToUserWallpapers)) { _ in
             selectedSection = .library
         }
+        .sheet(isPresented: libraryUpdatePresented) {
+            LibraryUpdateView {
+                dismissedLibraryUpdate = true
+                moodStore.isLibraryUpdateRequested = false
+            }
+        }
+    }
+
+    /// Shown once per launch when the library needs the user's go-ahead, and
+    /// again whenever a catalog-only action asks for it.
+    private var libraryUpdatePresented: Binding<Bool> {
+        Binding(
+            get: {
+                moodStore.isLibraryUpdateRequested
+                    || (moodStore.needsLibraryUpdate && !dismissedLibraryUpdate)
+            },
+            set: { presented in
+                if !presented {
+                    dismissedLibraryUpdate = true
+                    moodStore.isLibraryUpdateRequested = false
+                }
+            }
+        )
     }
 
     @ViewBuilder

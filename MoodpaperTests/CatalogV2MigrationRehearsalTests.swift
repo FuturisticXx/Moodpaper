@@ -325,10 +325,24 @@ final class CatalogV2MigrationRehearsalTests: XCTestCase {
 
         // ---- Relaunch: blocked without authorization, adopted with ----------
         LibraryMigration.environmentProvider = { [:] }
+        // The journal records that this migration was explicitly authorized,
+        // so an ordinary launch adopts the completed catalog without asking.
+        XCTAssertEqual(completeJournal.authorization, .environment)
+        let ordinaryLaunch = makeStore()
+        XCTAssertTrue(ordinaryLaunch.usesCatalog, "an authorized, completed migration is adopted on later launches")
+        XCTAssertFalse(ordinaryLaunch.needsLibraryUpdate)
+        // Strip the record (a catalog nobody authorized) and adoption is refused.
+        var unstamped = completeJournal
+        unstamped.authorization = nil
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(unstamped).write(to: WallpaperCatalogFile.journalURL(in: root))
         let unauthorized = makeStore()
-        XCTAssertFalse(unauthorized.usesCatalog, "published catalog is not adopted on a protected root without authorization")
+        XCTAssertFalse(unauthorized.usesCatalog, "an unauthorized catalog is not adopted on a protected root")
+        XCTAssertTrue(unauthorized.needsLibraryUpdate)
         XCTAssertEqual(unauthorized.moods.count, 3, "legacy model still serves the Vibes")
         XCTAssertNil(defaults.object(forKey: LibraryMigration.authorizationEnvironmentKey))
+        try encoder.encode(completeJournal).write(to: WallpaperCatalogFile.journalURL(in: root))
         authorize()
         let store = makeStore()
         XCTAssertTrue(store.usesCatalog)

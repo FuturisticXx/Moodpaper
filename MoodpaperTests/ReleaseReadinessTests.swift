@@ -367,6 +367,32 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertFalse(store.contains("authorizationEnvironmentKey"), "MoodStore must not read or store the authorization itself")
     }
 
+    /// The library update prompt speaks to the user, never in engine terms,
+    /// and the window offers it without ever migrating on its own.
+    func testLibraryUpdatePromptUsesCalmLanguageAndNeverMigratesOnAppear() throws {
+        let view = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryUpdateView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(view.contains("\"Update Library\""))
+        XCTAssertTrue(view.contains("\"Not Now\""))
+        XCTAssertTrue(view.contains("a backup is made first"))
+        for term in ["environment", "schema", "journal", "protected root", "MOODPAPER_", "migrat"] {
+            XCTAssertFalse(
+                view.lowercased().contains(term.lowercased()),
+                "prompt must not expose implementation term: \(term)"
+            )
+        }
+        XCTAssertFalse(view.contains("onAppear"), "appearing is not consent")
+
+        let root = try String(
+            contentsOf: repoRoot.appendingPathComponent("Moodpaper/HorizonSettingsView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(root.contains("LibraryUpdateView"))
+        XCTAssertFalse(root.contains("updateLibrary()"), "only the prompt's button starts the update")
+    }
+
     func testCatalogV2MigrationEngineExistsWithoutRetiringLegacyFolders() throws {
         let migration = try String(
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/LibraryMigration.swift"),

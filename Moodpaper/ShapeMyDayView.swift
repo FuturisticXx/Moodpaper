@@ -196,13 +196,9 @@ struct ShapeMyDayView: View {
         case .usingVibePhotos:
             urls = Array(store.allDayWallpapers(in: mood).prefix(4))
             ghosted = true
-        case .assigned(let filenames):
-            urls = filenames.compactMap { name in
-                group.slots.compactMap { store.wallpapers(for: $0, in: mood).first { $0.lastPathComponent == name } }.first
-            }
-            ghosted = false
-        case .mixed:
-            urls = group.slots.flatMap { store.wallpapers(for: $0, in: mood) }
+        case .assigned, .mixed:
+            // The store resolves identity to loadable files in both modes.
+            urls = store.dayPartWallpaperURLs(for: group, in: mood)
             ghosted = false
         }
         return HStack(spacing: HorizonSpacing.xs) {
