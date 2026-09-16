@@ -389,7 +389,11 @@ final class ReleaseReadinessTests: XCTestCase {
             contentsOf: repoRoot.appendingPathComponent("Moodpaper/WallpaperManager.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(manager.contains("resolveCanonicalURL(forPlaybackIdentifier"))
+        XCTAssertTrue(manager.contains("MoodStore.shared.resolvePlaybackURL(forIdentifier:"))
+        XCTAssertFalse(
+            manager.contains("if FileManager.default.fileExists(atPath: fileURL.path) { return fileURL }"),
+            "absolute playback identifiers must resolve through the store, never straight from disk"
+        )
         XCTAssertTrue(manager.contains("MoodStore.shared.effectiveWallpapers(for: timeSlot"))
     }
 }

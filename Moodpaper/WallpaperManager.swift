@@ -795,8 +795,11 @@ class WallpaperManager: ObservableObject {
         // the persisted dwell clock hasn't expired, keep it and just repair
         // the bookkeeping.
         let persistedIdentifier = currentWallpaperIdentifier()
+        // A persisted identifier the store cannot resolve (for example a
+        // Catalog asset path while the store is on the legacy model) is not
+        // a wallpaper to preserve; normal selection runs instead.
         let preservePersistedAtLaunch = needsInitialSet && Self.shouldPreservePersistedWallpaperAtLaunch(
-            hasPersistedWallpaper: persistedIdentifier != nil,
+            hasPersistedWallpaper: persistedIdentifier.flatMap { wallpaperURL(for: $0) } != nil,
             persistedWallpaperSlot: nil,
             resolvedSlot: resolvedSlot,
             secondsSinceLastChange: lastWallpaperChangeAt.map { Date().timeIntervalSince($0) },
@@ -1194,12 +1197,12 @@ class WallpaperManager: ObservableObject {
         }
     }
 
-    /// Resolves either a bundled wallpaper name or a user-added absolute file path.
+    /// Resolves either a bundled wallpaper name or a user-added absolute file
+    /// path. Absolute paths always go through the store so a persisted
+    /// Catalog asset path cannot bypass a store that is on the legacy model.
     private func wallpaperURL(for identifier: String) -> URL? {
         if identifier.hasPrefix("/") {
-            let fileURL = URL(fileURLWithPath: identifier)
-            if FileManager.default.fileExists(atPath: fileURL.path) { return fileURL }
-            return MoodStore.shared.resolveCanonicalURL(forPlaybackIdentifier: identifier)
+            return MoodStore.shared.resolvePlaybackURL(forIdentifier: identifier)
         }
         return bundleURL(for: identifier)
     }

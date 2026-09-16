@@ -733,7 +733,133 @@ final class CatalogV2MigrationTests: XCTestCase {
         XCTAssertThrowsError(try store.ensureCatalog()) { error in
             XCTAssertTrue(error is LibraryMigration.MigrationBlockedError)
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: WallpaperCatalogFile.catalogURL(in: real).path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: WallpaperCatalogFile.migrationRoot(in: real).path))
+        // The real root may legitimately hold a published catalog (Phase 6A
+        // production migration); a blocked store must still ignore it. Zero
+        // writes are proven by the external hash comparison around this run.
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: real))
+    }
+
+    // MARK: - Playback identifier boundary
+
+    /// Migrates a two-Vibe library on the disposable root and returns the
+    /// canonical asset path plus the legacy source paths for one wallpaper.
+    private func migratedPlaybackFixture() throws -> (canonical: String, legacy: [String], activeVibe: Mood) {
+        let store = makeStore()
+        let calm = try XCTUnwrap(store.create(name: "Calm"))
+        let bold = try XCTUnwrap(store.create(name: "Bold"))
+        let calmLake = store.allDayFolderURL(in: calm).appendingPathComponent("lake.png")
+        try writePNG(to: calmLake)
+        let boldLake = store.allDayFolderURL(in: bold).appendingPathComponent("lake.png")
+        try FileManager.default.createDirectory(at: boldLake.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: calmLake, to: boldLake)
+        store.activate(bold)
+        _ = try LibraryMigration.migrateIfNeeded(libraryRoot: libraryRoot)
+        let catalog = try LibraryMigration.loadCatalog(from: libraryRoot)
+        let asset = try XCTUnwrap(catalog.assets.first)
+        XCTAssertEqual(catalog.assets.count, 1)
+        let canonical = LibraryMigration.canonicalURL(for: asset, libraryRoot: libraryRoot).standardizedFileURL.path
+        return (canonical, asset.legacySourcePaths.sorted(), bold)
+    }
+
+    private func catalogSnapshot() throws -> [String: String] {
+        var out: [String: String] = [:]
+        let catalogURL = WallpaperCatalogFile.catalogURL(in: libraryRoot)
+        out["catalog.json"] = try WallpaperIdentity.sha256Hex(of: catalogURL)
+        let assets = WallpaperCatalogFile.assetsRoot(in: libraryRoot)
+        for file in try FileManager.default.contentsOfDirectory(at: assets, includingPropertiesForKeys: nil) {
+            out[file.lastPathComponent] = try WallpaperIdentity.sha256Hex(of: file)
+        }
+        return out
+    }
+
+    /// 1. Adopted Catalog mode accepts a persisted Catalog/Assets identifier.
+    func testAdoptedCatalogModeResolvesCatalogAssetIdentifier() throws {
+        let fixture = try migratedPlaybackFixture()
+        let store = makeStore()
+        XCTAssertTrue(store.usesCatalog)
+        XCTAssertTrue(store.isCatalogAssetPath(fixture.canonical))
+        XCTAssertEqual(store.resolvePlaybackURL(forIdentifier: fixture.canonical)?.standardizedFileURL.path, fixture.canonical)
+        // Unchanged semantics: an existing legacy path is used as-is, and one
+        // that has gone away remaps to the canonical file.
+        XCTAssertEqual(
+            store.resolvePlaybackURL(forIdentifier: fixture.legacy[0])?.standardizedFileURL.path,
+            fixture.legacy[0]
+        )
+        try FileManager.default.removeItem(atPath: fixture.legacy[0])
+        XCTAssertEqual(
+            store.resolvePlaybackURL(forIdentifier: fixture.legacy[0])?.standardizedFileURL.path,
+            fixture.canonical
+        )
+    }
+
+    /// 2 + 3. Blocked legacy mode never uses the asset path directly and
+    /// remaps to the equivalent legacy wallpaper, preferring the active Vibe.
+    func testBlockedLegacyModeRemapsCatalogAssetIdentifierToLegacyWallpaper() throws {
+        let fixture = try migratedPlaybackFixture()
+        LibraryMigration.testLiveLibraryRoot = libraryRoot
+        let before = try catalogSnapshot()
+
+        let store = makeStore()
+        XCTAssertFalse(store.usesCatalog, "adoption is blocked without authorization")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.canonical))
+        let resolved = try XCTUnwrap(store.resolvePlaybackURL(forIdentifier: fixture.canonical))
+        XCTAssertNotEqual(resolved.standardizedFileURL.path, fixture.canonical)
+        XCTAssertFalse(store.isCatalogAssetPath(resolved.path))
+        XCTAssertTrue(fixture.legacy.contains(resolved.standardizedFileURL.path))
+        XCTAssertTrue(
+            resolved.path.contains("/Moods/\(fixture.activeVibe.id)/"),
+            "remap prefers the active Vibe's copy"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: resolved.path))
+
+        // 5. Nothing in the Catalog store was written or deleted.
+        XCTAssertEqual(try catalogSnapshot(), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.canonical))
+        XCTAssertEqual(try LibraryMigration.loadJournal(from: libraryRoot).phase, .complete, "no migration reran")
+    }
+
+    /// 4. Without a legacy equivalent the stale identifier is ignored safely.
+    func testBlockedLegacyModeIgnoresCatalogAssetIdentifierWithoutLegacyEquivalent() throws {
+        let fixture = try migratedPlaybackFixture()
+        LibraryMigration.testLiveLibraryRoot = libraryRoot
+        for path in fixture.legacy {
+            try FileManager.default.removeItem(atPath: path)
+        }
+        let before = try catalogSnapshot()
+
+        let store = makeStore()
+        XCTAssertFalse(store.usesCatalog)
+        XCTAssertNil(store.resolvePlaybackURL(forIdentifier: fixture.canonical))
+        // An asset path the catalog does not know is ignored too.
+        let unknown = WallpaperCatalogFile.assetsRoot(in: libraryRoot).appendingPathComponent("\(UUID().uuidString.lowercased()).png").path
+        XCTAssertNil(store.resolvePlaybackURL(forIdentifier: unknown))
+        XCTAssertEqual(try catalogSnapshot(), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.canonical), "the asset is never deleted")
+
+        // With no catalog.json at all, an asset-shaped path is ignored as well.
+        let bare = makeStore()
+        try FileManager.default.removeItem(at: WallpaperCatalogFile.catalogURL(in: libraryRoot))
+        XCTAssertNil(bare.resolvePlaybackURL(forIdentifier: fixture.canonical))
+    }
+
+    /// 6. Ordinary identifiers behave as before in both modes.
+    func testPlaybackResolutionKeepsExistingSemanticsForOrdinaryPaths() throws {
+        let store = makeStore()
+        let vibe = try XCTUnwrap(store.create(name: "Plain"))
+        let legacyFile = store.allDayFolderURL(in: vibe).appendingPathComponent("plain.png")
+        try writePNG(to: legacyFile)
+        XCTAssertFalse(store.usesCatalog)
+        XCTAssertEqual(store.resolvePlaybackURL(forIdentifier: legacyFile.path)?.standardizedFileURL, legacyFile.standardizedFileURL)
+        XCTAssertNil(store.resolvePlaybackURL(forIdentifier: libraryRoot.appendingPathComponent("missing.png").path))
+        XCTAssertNil(store.resolvePlaybackURL(forIdentifier: "bundled-name"), "bundle names are not the store's concern")
+
+        _ = try LibraryMigration.migrateIfNeeded(libraryRoot: libraryRoot)
+        let adopted = makeStore()
+        XCTAssertTrue(adopted.usesCatalog)
+        XCTAssertEqual(adopted.resolvePlaybackURL(forIdentifier: legacyFile.path)?.standardizedFileURL, legacyFile.standardizedFileURL)
+        try FileManager.default.removeItem(at: legacyFile)
+        let canonical = try XCTUnwrap(adopted.resolvePlaybackURL(forIdentifier: legacyFile.path))
+        XCTAssertTrue(adopted.isCatalogAssetPath(canonical.path))
+        XCTAssertNil(adopted.resolvePlaybackURL(forIdentifier: libraryRoot.appendingPathComponent("missing.png").path))
     }
 }

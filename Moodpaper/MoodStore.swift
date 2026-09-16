@@ -876,6 +876,49 @@ final class MoodStore: ObservableObject {
         return nil
     }
 
+    // MARK: - Playback identifier resolution
+
+    /// True when `path` lies inside this library's Catalog asset store.
+    func isCatalogAssetPath(_ path: String) -> Bool {
+        let assets = WallpaperCatalogFile.assetsRoot(in: storageRootURL).standardizedFileURL.path + "/"
+        return URL(fileURLWithPath: path).standardizedFileURL.path.hasPrefix(assets)
+    }
+
+    /// Resolves a persisted absolute playback identifier through the store's
+    /// current mode. In Catalog mode both canonical asset paths and legacy
+    /// paths resolve to the canonical file. In legacy mode, including a
+    /// blocked adoption, a path inside Catalog/Assets is never used directly:
+    /// it is remapped to a legacy source that still exists, or ignored so
+    /// normal legacy selection chooses. Catalog data is only ever read here.
+    func resolvePlaybackURL(forIdentifier identifier: String) -> URL? {
+        guard identifier.hasPrefix("/") else { return nil }
+        let url = URL(fileURLWithPath: identifier)
+        if usesCatalog {
+            if fileManager.fileExists(atPath: url.path) { return url }
+            return resolveCanonicalURL(forPlaybackIdentifier: identifier)
+        }
+        if isCatalogAssetPath(identifier) {
+            return legacyURL(forCatalogAssetPath: identifier)
+        }
+        return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private func legacyURL(forCatalogAssetPath path: String) -> URL? {
+        guard let published = try? LibraryMigration.loadCatalog(from: storageRootURL) else { return nil }
+        let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let asset = published.assets.first(where: {
+            LibraryMigration.canonicalURL(for: $0, libraryRoot: storageRootURL).standardizedFileURL.path == canonical
+        }) else { return nil }
+        let existing = asset.legacySourcePaths.filter { fileManager.fileExists(atPath: $0) }.sorted()
+        if let activeMoodID {
+            let activeFolder = moodsRootURL.appendingPathComponent(activeMoodID).standardizedFileURL.path + "/"
+            if let preferred = existing.first(where: { $0.hasPrefix(activeFolder) }) {
+                return URL(fileURLWithPath: preferred)
+            }
+        }
+        return existing.first.map { URL(fileURLWithPath: $0) }
+    }
+
     /// Adopts an existing catalog or migrates the legacy folders into one.
     /// On a protected root without explicit authorization neither happens:
     /// a stale catalog.json is ignored and the store stays on the legacy
