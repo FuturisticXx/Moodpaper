@@ -259,20 +259,6 @@ final class MoodStore: ObservableObject {
         return self.mood(id: created.id) ?? created
     }
 
-    func allVisibleWallpaperURLs() -> [URL] {
-        var seen = Set<String>()
-        var urls: [URL] = []
-        for mood in moods {
-            for item in libraryItems(in: mood) {
-                let key = item.assetID ?? item.url.standardizedFileURL.path
-                if seen.insert(key).inserted {
-                    urls.append(item.url)
-                }
-            }
-        }
-        return urls
-    }
-
     private func importLegacyLibraryThroughStore(
         from legacyRoot: URL
     ) async throws -> LegacyLibraryMigration.Summary {
