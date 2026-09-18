@@ -19,8 +19,31 @@ enum LegacyLibraryMigration {
     struct Summary: Equatable {
         let moodCount: Int
         let imageCount: Int
+        let preservedUserWallpaperCount: Int
+
+        init(moodCount: Int, imageCount: Int, preservedUserWallpaperCount: Int = 0) {
+            self.moodCount = moodCount
+            self.imageCount = imageCount
+            self.preservedUserWallpaperCount = preservedUserWallpaperCount
+        }
 
         static let empty = Summary(moodCount: 0, imageCount: 0)
+
+        func adding(images: Int) -> Summary {
+            Summary(
+                moodCount: moodCount,
+                imageCount: imageCount + images,
+                preservedUserWallpaperCount: preservedUserWallpaperCount
+            )
+        }
+    }
+
+    /// Destination already uses Catalog as source of truth, so a raw
+    /// `Moods/` copy would be ignored. Route through `MoodStore` instead.
+    struct CatalogBackedDestinationError: LocalizedError {
+        var errorDescription: String? {
+            "This library already uses the wallpaper catalog. Import through Moodpaper so the photos stay visible in your Vibes."
+        }
     }
 
     private static let supportedImageExtensions: Set<String> = [
@@ -61,12 +84,21 @@ enum LegacyLibraryMigration {
     /// `Moods/`), not the `Moods/` folder itself.
     @discardableResult
     static func importLibrary(from legacyRoot: URL, into destinationRoot: URL) throws -> Summary {
+        if (try? LibraryMigration.loadCatalog(from: destinationRoot))?.isReady == true {
+            throw CatalogBackedDestinationError()
+        }
+
         let scoped = legacyRoot.startAccessingSecurityScopedResource()
         defer { if scoped { legacyRoot.stopAccessingSecurityScopedResource() } }
 
         let fileManager = FileManager.default
+        let leftoverCount = LegacyUserWallpapers.inventory(in: legacyRoot).count
         let legacyMoods = try decodeMoods(at: metadataURL(in: legacyRoot))
-        guard !legacyMoods.isEmpty else { return .empty }
+        guard !legacyMoods.isEmpty else {
+            return leftoverCount == 0
+                ? .empty
+                : Summary(moodCount: 0, imageCount: 0, preservedUserWallpaperCount: leftoverCount)
+        }
 
         let destinationMoodsRoot = destinationRoot.appendingPathComponent("Moods", isDirectory: true)
         try fileManager.createDirectory(at: destinationMoodsRoot, withIntermediateDirectories: true)
@@ -89,22 +121,16 @@ enum LegacyLibraryMigration {
             importedMoods += 1
         }
 
-        // User wallpapers are per-slot folders at the library root and carry
-        // no metadata, so they merge file-by-file rather than by id.
-        let legacyUserWallpapers = legacyRoot.appendingPathComponent("UserWallpapers", isDirectory: true)
-        if fileManager.fileExists(atPath: legacyUserWallpapers.path) {
-            importedImages += try copyImageTree(
-                from: legacyUserWallpapers,
-                to: destinationRoot.appendingPathComponent("UserWallpapers", isDirectory: true)
-            )
-        }
-
         if importedMoods > 0 {
             let data = try JSONEncoder().encode(merged)
             try data.write(to: metadataURL(in: destinationRoot))
         }
 
-        return Summary(moodCount: importedMoods, imageCount: importedImages)
+        return Summary(
+            moodCount: importedMoods,
+            imageCount: importedImages,
+            preservedUserWallpaperCount: leftoverCount
+        )
     }
 
     // MARK: Helpers
@@ -118,6 +144,46 @@ enum LegacyLibraryMigration {
     private static func decodeMoods(at url: URL) throws -> [Mood] {
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode([Mood].self, from: data)
+    }
+
+    static func moods(in libraryRoot: URL) throws -> [Mood] {
+        try decodeMoods(at: metadataURL(in: libraryRoot))
+    }
+
+    /// Image files under one legacy Vibe, mapped to placements. Folder paths
+    /// are a layout hint only, never identity.
+    static func wallpaperFiles(forMoodID moodID: String, in libraryRoot: URL) -> [(url: URL, placement: WallpaperPlacement)] {
+        let moodRoot = libraryRoot
+            .appendingPathComponent("Moods", isDirectory: true)
+            .appendingPathComponent(moodID, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: moodRoot.path) else { return [] }
+
+        var files: [(url: URL, placement: WallpaperPlacement)] = []
+        let enumerator = FileManager.default.enumerator(
+            at: moodRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        )
+        while let url = enumerator?.nextObject() as? URL {
+            let isFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+            guard isFile, supportedImageExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            files.append((url, placement(forLegacyMoodFile: url, moodRoot: moodRoot)))
+        }
+        return files
+    }
+
+    private static func placement(forLegacyMoodFile url: URL, moodRoot: URL) -> WallpaperPlacement {
+        let relative = url.deletingLastPathComponent().path
+            .replacingOccurrences(of: moodRoot.path, with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let folder = relative.split(separator: "/").first.map(String.init) ?? ""
+        if folder == MoodStore.allDayFolderName || folder.isEmpty {
+            return .throughoutTheDay
+        }
+        if let slot = TimeSlot(rawValue: folder) {
+            return .during(slot)
+        }
+        return .throughoutTheDay
     }
 
     /// Recursively copy every supported image, preserving the slot-folder

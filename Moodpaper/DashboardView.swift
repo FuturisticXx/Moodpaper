@@ -8,7 +8,6 @@ struct DashboardView: View {
     @EnvironmentObject private var wallpaperManager: WallpaperManager
     @StateObject private var weatherService = HorizonWeatherService.shared
     @StateObject private var locationService = LocationService.shared
-    @StateObject private var userWallpaperManager = UserWallpaperManager.shared
     @ObservedObject private var moodStore = MoodStore.shared
     @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation = false
 
@@ -323,7 +322,6 @@ private struct WeatherCard: View {
     @AppStorage("temperatureUnit") private var temperatureUnit = "Fahrenheit"
     @AppStorage("windSpeedUnit") private var windSpeedUnit = "mph"
     @AppStorage("useDeviceLocation") private var useDeviceLocation: Bool = true
-    @StateObject private var userWallpaperManager = UserWallpaperManager.shared
     @ObservedObject private var moodStore = MoodStore.shared
     @ObservedObject private var locationService = LocationService.shared
 

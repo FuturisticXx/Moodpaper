@@ -4,7 +4,7 @@ import CoreGraphics
 import UniformTypeIdentifiers
 
 /// Decode an image from `sourceURL` and write a normalized sRGB JPEG to `destinationURL`.
-/// Used by both MoodStore (Mood slot imports) and UserWallpaperManager
+/// Used by MoodStore wallpaper imports
 /// (global pool imports). Centralized here to avoid duplication.
 ///
 /// Compression quality is 0.92: visually lossless for photographs, keeps file

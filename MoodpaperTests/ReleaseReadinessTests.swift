@@ -417,7 +417,7 @@ final class ReleaseReadinessTests: XCTestCase {
         let debugEnd = try XCTUnwrap(migration.range(of: "#endif", range: overrideIndex..<migration.endIndex)).lowerBound
         XCTAssertLessThan(debugStart, overrideIndex)
         XCTAssertLessThan(overrideIndex, debugEnd)
-        for file in ["Moodpaper/WallpaperManager.swift", "Moodpaper/UserWallpaperManager.swift", "Moodpaper/MoodStore.swift"] {
+        for file in ["Moodpaper/WallpaperManager.swift", "Moodpaper/MoodStore.swift"] {
             let source = try String(contentsOf: repoRoot.appendingPathComponent(file), encoding: .utf8)
             XCTAssertFalse(source.contains(".applicationSupportDirectory"), "\(file) must resolve through LibraryMigration")
         }
