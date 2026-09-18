@@ -219,7 +219,6 @@ class WallpaperManager: ObservableObject {
     private var desiredURLPerScreen: [String: URL] = [:]
     private var lastSlot: String = ""
     private var lastWallpaperChangeAt: Date?
-    private let userWallpaperManager = UserWallpaperManager.shared
     private let historyKey = "wallpaperHistory"
     private let displayModesKey = "schedule.displayModes"
     private let maxHistoryCount = 50

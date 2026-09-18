@@ -181,9 +181,15 @@ final class MoodStore: ObservableObject {
     }
 
     /// Copy a previous install's library in, then adopt it. Returns the
-    /// summary so callers can report what arrived.
+    /// summary so callers can report what arrived. Catalog-backed
+    /// destinations import through store APIs so files never land in
+    /// ignored `Moods/` folders.
     @discardableResult
-    func importLegacyLibrary(from legacyRoot: URL) throws -> LegacyLibraryMigration.Summary {
+    func importLegacyLibrary(from legacyRoot: URL) async throws -> LegacyLibraryMigration.Summary {
+        if usesCatalog || ((try? LibraryMigration.loadCatalog(from: storageRootURL))?.isReady == true) {
+            return try await importLegacyLibraryThroughStore(from: legacyRoot)
+        }
+
         let summary = try LegacyLibraryMigration.importLibrary(
             from: legacyRoot,
             into: storageRootURL
@@ -192,8 +198,147 @@ final class MoodStore: ObservableObject {
         if activeMoodID == nil {
             setActiveMoodID(moods.first?.id)
         }
+        var extraCount = 0
+        if let mood = moods.first ?? ensurePlayableVibe() {
+            extraCount = try await importPreservedUserWallpapers(
+                from: legacyRoot,
+                into: mood
+            ).importedCount
+        }
         defaults.set(true, forKey: LegacyLibraryMigration.didImportKey)
-        return summary
+        return summary.adding(images: extraCount)
+    }
+
+    func preservedUserWallpapers(in libraryRoot: URL? = nil) -> [LegacyUserWallpapers.File] {
+        LegacyUserWallpapers.inventory(in: libraryRoot ?? storageRootURL)
+    }
+
+    @discardableResult
+    func importPreservedUserWallpapers(
+        from libraryRoot: URL? = nil,
+        into mood: Mood
+    ) async throws -> WallpaperImportSummary {
+        let files = preservedUserWallpapers(in: libraryRoot)
+        guard !files.isEmpty else {
+            return WallpaperImportSummary(discoveredCount: 0, importedCount: 0, failedCount: 0)
+        }
+        var imported = 0
+        var failed = 0
+        for file in files {
+            let summary: WallpaperImportSummary
+            switch file.placement {
+            case .throughoutTheDay:
+                summary = try await importAllDayWallpapers(from: [file.url], in: mood)
+            case .during(let slot):
+                summary = try await importWallpapers(from: [file.url], to: slot, in: mood)
+            }
+            imported += summary.importedCount
+            failed += summary.failedCount
+        }
+        return WallpaperImportSummary(
+            discoveredCount: files.count,
+            importedCount: imported,
+            failedCount: failed
+        )
+    }
+
+    /// First-run / welcome commit: starter photographs become a real Vibe
+    /// through the normal import APIs so Catalog mode never hides them.
+    @discardableResult
+    func createStarterVibe(named name: String, artBySlotID: [String: URL]) async throws -> Mood? {
+        guard let created = create(name: name) else { return nil }
+        for slot in TimeSlot.allCases {
+            guard let url = artBySlotID[slot.slotID] else { continue }
+            _ = try await importWallpapers(from: [url], to: slot, in: created)
+        }
+        if totalWallpaperCount(in: created) == 0 {
+            delete(created)
+            return nil
+        }
+        activate(created)
+        return self.mood(id: created.id) ?? created
+    }
+
+    func allVisibleWallpaperURLs() -> [URL] {
+        var seen = Set<String>()
+        var urls: [URL] = []
+        for mood in moods {
+            for item in libraryItems(in: mood) {
+                let key = item.assetID ?? item.url.standardizedFileURL.path
+                if seen.insert(key).inserted {
+                    urls.append(item.url)
+                }
+            }
+        }
+        return urls
+    }
+
+    private func importLegacyLibraryThroughStore(
+        from legacyRoot: URL
+    ) async throws -> LegacyLibraryMigration.Summary {
+        try ensureCatalog()
+        let scoped = legacyRoot.startAccessingSecurityScopedResource()
+        defer { if scoped { legacyRoot.stopAccessingSecurityScopedResource() } }
+
+        let existingIDs = Set(moods.map(\.id))
+        let legacyMoods = (try? LegacyLibraryMigration.moods(in: legacyRoot)) ?? []
+        var importedMoods = 0
+        var importedImages = 0
+
+        for legacyMood in legacyMoods where !existingIDs.contains(legacyMood.id) {
+            guard let mood = adoptLegacyMood(legacyMood) else { continue }
+            let files = LegacyLibraryMigration.wallpaperFiles(forMoodID: legacyMood.id, in: legacyRoot)
+            for file in files {
+                let summary: WallpaperImportSummary
+                switch file.placement {
+                case .throughoutTheDay:
+                    summary = try await importAllDayWallpapers(from: [file.url], in: mood)
+                case .during(let slot):
+                    summary = try await importWallpapers(from: [file.url], to: slot, in: mood)
+                }
+                importedImages += summary.importedCount
+            }
+            importedMoods += 1
+        }
+
+        if importedMoods == 0, moods.isEmpty, !LegacyUserWallpapers.inventory(in: legacyRoot).isEmpty {
+            _ = ensurePlayableVibe()
+        }
+        if activeMoodID == nil {
+            setActiveMoodID(moods.first?.id)
+        }
+        let leftover = try await {
+            if let mood = moods.first {
+                return try await importPreservedUserWallpapers(from: legacyRoot, into: mood)
+            }
+            return WallpaperImportSummary(discoveredCount: 0, importedCount: 0, failedCount: 0)
+        }()
+        importedImages += leftover.importedCount
+        defaults.set(true, forKey: LegacyLibraryMigration.didImportKey)
+        return LegacyLibraryMigration.Summary(
+            moodCount: importedMoods,
+            imageCount: importedImages,
+            preservedUserWallpaperCount: leftover.discoveredCount
+        )
+    }
+
+    private func adoptLegacyMood(_ mood: Mood) -> Mood? {
+        guard !isLibraryAccessBlocked else { return nil }
+        guard !moods.contains(where: { $0.id == mood.id }) else { return nil }
+        var imported = mood
+        if imported.wallpapersPerDay == nil {
+            imported.wallpapersPerDay = defaultWallpapersPerDayForNewVibes
+        }
+        moods.append(imported)
+        try? fileManager.createDirectory(
+            at: moodsRootURL.appendingPathComponent(imported.id),
+            withIntermediateDirectories: true
+        )
+        save()
+        if activeMoodID == nil {
+            setActiveMoodID(imported.id)
+        }
+        return imported
     }
 
     var activeMood: Mood? {
@@ -823,7 +968,7 @@ final class MoodStore: ObservableObject {
     }
 
     /// Sanitized, collision-free destination filename. Same rule as
-    /// UserWallpaperManager.normalizedImportDestination.
+    /// collision-free destination filename used by copy-on-import.
     nonisolated static func importDestination(for sourceURL: URL, in directory: URL) -> URL {
         let rawBaseName = sourceURL.deletingPathExtension().lastPathComponent
         let sanitizedBaseName = rawBaseName

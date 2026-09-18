@@ -517,7 +517,6 @@ private struct CurrentWallpaperPreview: View {
 struct ScheduleSettingsView: View {
     @EnvironmentObject private var scheduleSettings: HorizonScheduleSettings
     @AppStorage(HorizonScheduleDefaults.timeSlotModeKey) private var timeSlotMode = "Detailed"
-    @StateObject private var userWallpaperManager = UserWallpaperManager.shared
 
     private var activeSlots: [HorizonScheduleSettings.TimeSlot] {
         timeSlotMode == "Simple" ? HorizonScheduleSettings.simpleTimeSlots : HorizonScheduleSettings.timeSlots
@@ -2174,6 +2173,7 @@ private struct FocusStatusCard: View {
         .horizonGlassCard(style: .standard, padding: HorizonSpacing.lg)
     }
 }
+
 
 // MARK: - Focus Wallpaper Picker
 

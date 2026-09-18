@@ -48,6 +48,10 @@ struct MoodsView: View {
                     LegacyLibraryImportCard(onImport: importLegacyLibrary)
                 }
 
+                if !store.preservedUserWallpapers().isEmpty {
+                    PreservedUserWallpapersCard(onImport: importPreservedUserWallpapers)
+                }
+
                 if store.moods.isEmpty {
                     EmptyVibesCard(
                         onCreate: { showingCreateSheet = true },
@@ -129,20 +133,42 @@ struct MoodsView: View {
             legacyRoot = picked
         }
 
-        do {
-            let summary = try store.importLegacyLibrary(from: legacyRoot)
-            didImportLegacyLibrary = true
-            legacyImportResult = LegacyImportResult(
-                title: summary.moodCount > 0 ? "Library Imported" : "Nothing to Import",
-                message: summary.moodCount > 0
-                    ? "Brought in \(summary.moodCount) Vibe\(summary.moodCount == 1 ? "" : "s") and \(summary.imageCount) wallpaper\(summary.imageCount == 1 ? "" : "s")."
-                    : "That folder's Vibes are already in your library."
-            )
-        } catch {
-            legacyImportResult = LegacyImportResult(
-                title: "Import Failed",
-                message: error.localizedDescription
-            )
+        Task {
+            do {
+                let summary = try await store.importLegacyLibrary(from: legacyRoot)
+                didImportLegacyLibrary = true
+                legacyImportResult = LegacyImportResult(
+                    title: summary.moodCount > 0 ? "Library Imported" : "Nothing to Import",
+                    message: summary.moodCount > 0
+                        ? "Brought in \(summary.moodCount) Vibe\(summary.moodCount == 1 ? "" : "s") and \(summary.imageCount) wallpaper\(summary.imageCount == 1 ? "" : "s")."
+                        : "That folder's Vibes are already in your library."
+                )
+            } catch {
+                legacyImportResult = LegacyImportResult(
+                    title: "Import Failed",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func importPreservedUserWallpapers() {
+        Task {
+            guard let mood = store.ensurePlayableVibe() else { return }
+            do {
+                let summary = try await store.importPreservedUserWallpapers(into: mood)
+                legacyImportResult = LegacyImportResult(
+                    title: summary.importedCount > 0 ? "Wallpapers Added" : "Nothing to Import",
+                    message: summary.importedCount > 0
+                        ? "Brought in \(summary.importedCount) wallpaper\(summary.importedCount == 1 ? "" : "s") from the previous wallpaper folder. The original files were left in place."
+                        : "Those photos are already in your library."
+                )
+            } catch {
+                legacyImportResult = LegacyImportResult(
+                    title: "Import Failed",
+                    message: error.localizedDescription
+                )
+            }
         }
     }
 }
@@ -176,6 +202,35 @@ private struct LegacyLibraryImportCard: View {
             Spacer(minLength: HorizonSpacing.sm)
 
             Button("Import…", action: onImport)
+                .buttonStyle(.bordered)
+        }
+        .horizonGlassCard(style: .standard, padding: HorizonSpacing.lg)
+    }
+}
+
+private struct PreservedUserWallpapersCard: View {
+    let onImport: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: HorizonSpacing.md) {
+            Image(systemName: "photo.on.rectangle")
+                .font(.system(size: 22))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(HorizonColors.secondaryAccent)
+
+            VStack(alignment: .leading, spacing: HorizonSpacing.xs) {
+                Text("Older wallpapers are still on this Mac")
+                    .font(HorizonTypography.bodyMedium)
+                    .foregroundColor(HorizonColors.textPrimary)
+                Text("Moodpaper found photos in a previous wallpaper folder. Add them to a Vibe without deleting the originals.")
+                    .font(HorizonTypography.caption)
+                    .foregroundColor(HorizonColors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: HorizonSpacing.sm)
+
+            Button("Add to Library", action: onImport)
                 .buttonStyle(.bordered)
         }
         .horizonGlassCard(style: .standard, padding: HorizonSpacing.lg)

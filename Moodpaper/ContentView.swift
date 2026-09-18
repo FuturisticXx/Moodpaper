@@ -5,7 +5,6 @@ internal import Combine
 struct ContentView: View {
     @Environment(\.openWindow) var openWindow
     @ObservedObject private var wallpaperManager = WallpaperManager.shared
-    @StateObject private var userWallpaperManager = UserWallpaperManager.shared
     @ObservedObject private var moodStore = MoodStore.shared
     @State private var previewImage: NSImage?
     @State private var previewImageURL: URL?

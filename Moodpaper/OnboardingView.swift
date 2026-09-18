@@ -301,28 +301,17 @@ struct OnboardingView: View {
         _ = WallpaperManager.shared
 
         let store = MoodStore.shared
-        guard let mood = store.create(name: name) else {
-            isCommitting = false
-            return
-        }
-
-        // The generated files are already normalized JPEGs, so a plain copy
-        // into the slot folders is enough; the folder IS the assignment.
-        for (slotID, url) in artURLs {
-            guard let slot = TimeSlot.allCases.first(where: { $0.slotID == slotID }) else { continue }
-            let destination = store.folderURL(for: slot, in: mood)
-                .appendingPathComponent("starter-\(slotID).jpg")
-            if !FileManager.default.fileExists(atPath: destination.path) {
-                try? FileManager.default.copyItem(at: url, to: destination)
+        Task {
+            do {
+                guard try await store.createStarterVibe(named: name, artBySlotID: artURLs) != nil else {
+                    isCommitting = false
+                    return
+                }
+                waitForDesktopChange()
+            } catch {
+                isCommitting = false
             }
         }
-
-        // First mood: create() already activated it and scheduled the engine
-        // refresh (which runs after this synchronous block, so the files
-        // above are in place). Any other case: activate() schedules it here.
-        store.activate(mood)
-
-        waitForDesktopChange()
     }
 
     /// Holds the window open until the engine has actually put the new
