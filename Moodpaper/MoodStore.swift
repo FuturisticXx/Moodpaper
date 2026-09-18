@@ -35,6 +35,9 @@ struct WallpaperImportSummary: Equatable, Sendable {
     let discoveredCount: Int
     let importedCount: Int
     let failedCount: Int
+    /// Catalog asset IDs the import produced or matched, in import order.
+    /// Empty on the legacy folder model.
+    var importedAssetIDs: [String] = []
 }
 
 /// Where a wallpaper lives inside a Vibe. The AllDay folder remains the
@@ -484,9 +487,10 @@ final class MoodStore: ObservableObject {
             }.value
             var imported = 0
             var failed = collected.failedCount
+            var importedAssetIDs: [String] = []
             for sourceURL in collected.urls {
                 do {
-                    try ingestImportedFile(sourceURL, into: mood, placement: placement)
+                    importedAssetIDs.append(try ingestImportedFile(sourceURL, into: mood, placement: placement))
                     imported += 1
                 } catch {
                     failed += 1
@@ -496,7 +500,8 @@ final class MoodStore: ObservableObject {
             summary = WallpaperImportSummary(
                 discoveredCount: collected.urls.count + collected.failedCount,
                 importedCount: imported,
-                failedCount: failed
+                failedCount: failed,
+                importedAssetIDs: importedAssetIDs
             )
         } else {
             summary = try await Task.detached(priority: .userInitiated) {
@@ -546,7 +551,35 @@ final class MoodStore: ObservableObject {
         self.catalog = catalog
         saveCatalog()
         try? fileManager.removeItem(at: canonical)
+        // The asset no longer exists anywhere, so it cannot be a Focus choice.
+        FocusAssetSelection.remove(asset.id, defaults: defaults)
         objectWillChange.send()
+    }
+
+    // MARK: - Focus assets
+
+    /// Every catalogued wallpaper, for the Focus picker. Memberships are
+    /// irrelevant here: a Focus choice is an asset, not a Vibe assignment.
+    /// Empty on the legacy model, where Focus only has time slots.
+    func focusSelectableAssets() -> [WallpaperAsset] {
+        guard usesCatalog, let catalog else { return [] }
+        return catalog.assets.sorted {
+            $0.originalFilename.localizedStandardCompare($1.originalFilename) == .orderedAscending
+        }
+    }
+
+    /// The canonical file for a Catalog asset ID, or nil when the store is
+    /// on the legacy model, the ID is unknown, or the file is missing.
+    func canonicalURL(forAssetID assetID: String) -> URL? {
+        guard usesCatalog, let asset = catalog?.asset(id: assetID) else { return nil }
+        let url = LibraryMigration.canonicalURL(for: asset, libraryRoot: storageRootURL)
+        return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// The explicit Focus wallpapers that still resolve, in stored order.
+    /// Unknown IDs are skipped rather than failing the whole set.
+    func focusCandidateURLs(assetIDs: [String]) -> [URL] {
+        assetIDs.compactMap { canonicalURL(forAssetID: $0) }
     }
 
     func addWallpaper(_ url: URL, to mood: Mood, placement: WallpaperPlacement = .throughoutTheDay) throws {
@@ -1225,11 +1258,12 @@ final class MoodStore: ObservableObject {
         saveCatalog()
     }
 
+    @discardableResult
     private func ingestImportedFile(
         _ sourceURL: URL,
         into mood: Mood,
         placement: WallpaperPlacement
-    ) throws {
+    ) throws -> String {
         try fileManager.createDirectory(
             at: WallpaperCatalogFile.assetsRoot(in: storageRootURL),
             withIntermediateDirectories: true
@@ -1238,7 +1272,7 @@ final class MoodStore: ObservableObject {
             .appendingPathComponent("import-\(UUID().uuidString.lowercased()).jpg")
         do {
             try writeNormalizedImage(from: sourceURL, to: temp)
-            try ingestExistingFile(
+            let assetID = try ingestExistingFile(
                 temp,
                 into: mood,
                 placement: placement,
@@ -1248,21 +1282,27 @@ final class MoodStore: ObservableObject {
             if fileManager.fileExists(atPath: temp.path), resolveAsset(for: temp) == nil {
                 try? fileManager.removeItem(at: temp)
             }
+            return assetID
         } catch {
             try? fileManager.removeItem(at: temp)
             throw error
         }
     }
 
+    /// Returns the ID of the asset the file now belongs to, whether it was
+    /// already catalogued, matched by content, or created here.
+    @discardableResult
     private func ingestExistingFile(
         _ fileURL: URL,
         into mood: Mood,
         placement: WallpaperPlacement,
         copyIfUntracked: Bool,
         originalFilename: String? = nil
-    ) throws {
+    ) throws -> String {
         try ensureCatalog()
-        guard var catalog else { return }
+        guard var catalog else {
+            throw LibraryMigration.MigrationBlockedError()
+        }
         if let existing = resolveAsset(for: fileURL) {
             var membership = catalog.memberships.first {
                 $0.assetID == existing.id && $0.moodID == mood.id
@@ -1276,7 +1316,7 @@ final class MoodStore: ObservableObject {
             catalog.replaceMembership(membership)
             self.catalog = catalog
             saveCatalog()
-            return
+            return existing.id
         }
 
         let hash = try WallpaperIdentity.sha256Hex(of: fileURL)
@@ -1306,7 +1346,7 @@ final class MoodStore: ObservableObject {
                 }
                 self.catalog = catalog
                 saveCatalog()
-                return
+                return match.id
             }
         }
 
@@ -1354,6 +1394,7 @@ final class MoodStore: ObservableObject {
         catalog.replaceMembership(membership)
         self.catalog = catalog
         saveCatalog()
+        return assetID
     }
 
     private func apply(_ placement: WallpaperPlacement, to membership: inout WallpaperMembership) {

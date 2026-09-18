@@ -822,11 +822,11 @@ class WallpaperManager: ObservableObject {
             lastSlot = resolvedSlot
             pendingHistorySlot = resolvedSlot  // HZN-006: recorded in setWallpaper on success
             withApplyTrigger("scheduledTick") {
-                setWallpaperForSlot(
-                    resolvedSlot,
-                    ignoreMood: focusMeetingActive,
-                    suppressContextualOverrides: focusMeetingActive
-                )
+                if focusMeetingActive {
+                    setFocusWallpaper(fallbackSlot: resolvedSlot)
+                } else {
+                    setWallpaperForSlot(resolvedSlot)
+                }
             }
             return
         }
@@ -844,11 +844,11 @@ class WallpaperManager: ObservableObject {
         lastSlot = resolvedSlot
         pendingHistorySlot = resolvedSlot  // HZN-006: recorded in setWallpaper on success
         withApplyTrigger("scheduledTick") {
-            setWallpaperForSlot(
-                resolvedSlot,
-                ignoreMood: focusMeetingActive,
-                suppressContextualOverrides: focusMeetingActive
-            )
+            if focusMeetingActive {
+                setFocusWallpaper(fallbackSlot: resolvedSlot)
+            } else {
+                setWallpaperForSlot(resolvedSlot)
+            }
         }
     }
 
@@ -912,11 +912,11 @@ class WallpaperManager: ObservableObject {
 
         pendingHistorySlot = resolvedSlot  // HZN-006
         withApplyTrigger(trigger) {
-            setWallpaperForSlot(
-                resolvedSlot,
-                ignoreMood: focusMeetingActive,
-                suppressContextualOverrides: focusMeetingActive
-            )
+            if focusMeetingActive {
+                setFocusWallpaper(fallbackSlot: resolvedSlot)
+            } else {
+                setWallpaperForSlot(resolvedSlot)
+            }
         }
         // Bookkeeping must track the WALL-CLOCK slot, not the pool the skip
         // pulled from. resolvedSlot follows the current wallpaper's manifest
@@ -983,7 +983,7 @@ class WallpaperManager: ObservableObject {
         guard let resolvedSlot = resolvedSlotForSchedule(from: slot) else { return }
         pendingHistorySlot = resolvedSlot
         withApplyTrigger("moodChange") {
-            setWallpaperForSlot(resolvedSlot, ignoreMood: false)
+            setWallpaperForSlot(resolvedSlot)
         }
         lastSlot = resolvedSlot
         lastWallpaperChangeAt = Date()
@@ -1148,11 +1148,7 @@ class WallpaperManager: ObservableObject {
         nextChangeCountdown = value
     }
 
-    func setWallpaperForSlot(
-        _ slot: String,
-        ignoreMood: Bool = false,
-        suppressContextualOverrides: Bool = false
-    ) {
+    func setWallpaperForSlot(_ slot: String) {
         activeSlot = slot  // HZN-003: captured by setWallpaper(url:) for independent display mode
 
         // Selection reads the active Mood's slot-specific pool first, then
@@ -1180,6 +1176,61 @@ class WallpaperManager: ObservableObject {
         case .holdCurrent: return nil
         case .moodPool:    return resolveWallpaperURL(from: pool)
         }
+    }
+
+    // MARK: - Focus wallpapers
+
+    /// What a meeting shows. Explicit Catalog assets win whenever any still
+    /// resolve; otherwise the Focus time slot's pool of the active Vibe,
+    /// which is the original behavior and the only one on the legacy model.
+    enum FocusWallpaperCandidates: Equatable {
+        case explicitAssets([URL])
+        case slot(String)
+    }
+
+    static func focusCandidates(
+        explicitAssetURLs: [URL],
+        fallbackSlot: String
+    ) -> FocusWallpaperCandidates {
+        explicitAssetURLs.isEmpty ? .slot(fallbackSlot) : .explicitAssets(explicitAssetURLs)
+    }
+
+    /// The one resolution every Focus consumer uses: the meeting tick, manual
+    /// skips during a meeting, and the Dashboard Focus preview.
+    func focusWallpaperCandidates(fallbackSlot: String) -> FocusWallpaperCandidates {
+        Self.focusCandidates(
+            explicitAssetURLs: MoodStore.shared.focusCandidateURLs(assetIDs: FocusAssetSelection.assetIDs()),
+            fallbackSlot: fallbackSlot
+        )
+    }
+
+    /// Applies a Focus wallpaper. `fallbackSlot` is the already-resolved
+    /// Focus slot used when no explicit asset applies.
+    func setFocusWallpaper(fallbackSlot: String) {
+        switch focusWallpaperCandidates(fallbackSlot: fallbackSlot) {
+        case .slot(let slot):
+            setWallpaperForSlot(slot)
+        case .explicitAssets(let urls):
+            activeSlot = fallbackSlot
+            guard let url = urls.randomElement() else { return }
+            // Independent displays draw from the same Focus set while this
+            // apply snapshots its per-screen sources (synchronously).
+            activeFocusCandidateURLs = urls
+            defer { activeFocusCandidateURLs = [] }
+            setWallpaper(url: url)
+        }
+    }
+
+    /// Non-empty only for the duration of an explicit-asset Focus apply.
+    private var activeFocusCandidateURLs: [URL] = []
+
+    /// A per-screen alternative for independent displays: another Focus
+    /// asset during an explicit Focus apply, otherwise the slot pool pick.
+    private func independentWallpaperURL(for slot: String) -> URL? {
+        if !activeFocusCandidateURLs.isEmpty {
+            return activeFocusCandidateURLs.randomElement()
+        }
+        return moodWallpaperURL(for: slot)
     }
 
     private func timeSlotFromString(_ slot: String) -> TimeSlot {
@@ -1335,7 +1386,7 @@ class WallpaperManager: ObservableObject {
         for screen in screens {
             if self.mode(for: screen.localizedName) == .independent,
                !slotSnapshot.isEmpty,
-               let independentURL = self.moodWallpaperURL(for: slotSnapshot),
+               let independentURL = self.independentWallpaperURL(for: slotSnapshot),
                independentURL != url {
                 sourceURLsByScreen[screen.localizedName] = independentURL
             } else {

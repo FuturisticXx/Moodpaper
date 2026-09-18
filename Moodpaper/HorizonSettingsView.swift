@@ -1945,7 +1945,7 @@ struct FocusModeSettingsView: View {
                                         Text("Your Focus Wallpapers")
                                             .font(HorizonTypography.headline)
                                             .foregroundColor(HorizonColors.textPrimary)
-                                        Text("Choose your focus wallpapers from your collection")
+                                        Text("Pick the photos to show during meetings")
                                             .font(HorizonTypography.callout)
                                             .foregroundColor(HorizonColors.textSecondary)
                                     }
@@ -1971,13 +1971,7 @@ struct FocusModeSettingsView: View {
                                     .buttonStyle(.plain)
                                 }
 
-                                FocusWallpaperPicker(
-                                    onWallpaperSelected: { url in
-                                        // Set the selected wallpaper as the current focus wallpaper
-                                        WallpaperManager.shared.setWallpaperManually(url: url)
-                                    },
-                                    showingFilePicker: $showingFocusFilePicker
-                                )
+                                FocusWallpaperPicker(showingFilePicker: $showingFocusFilePicker)
                             }
                             .horizonGlassCard(style: .standard, padding: HorizonSpacing.lg)
                         }
@@ -2183,32 +2177,23 @@ private struct FocusStatusCard: View {
 
 // MARK: - Focus Wallpaper Picker
 
+/// Explicit Focus photos, chosen by Catalog asset. Choosing marks an asset
+/// for meetings; it does not change the desktop now.
 private struct FocusWallpaperPicker: View {
-    let onWallpaperSelected: (URL) -> Void
     @Binding var showingFilePicker: Bool
-    @StateObject private var userWallpaperManager = UserWallpaperManager.shared
-    @State private var allWallpapers: [URL] = []
+    @ObservedObject private var store = MoodStore.shared
+    @State private var selectedAssetIDs: Set<String> = []
+    @State private var isImporting = false
+    @State private var importMessage: String?
+
+    private var assets: [WallpaperAsset] { store.focusSelectableAssets() }
 
     var body: some View {
         VStack(alignment: .leading, spacing: HorizonSpacing.md) {
-            if allWallpapers.isEmpty {
-                Text("No wallpapers imported yet. Browse your computer to add wallpapers for Focus mode.")
-                    .font(HorizonTypography.callout)
-                    .foregroundColor(HorizonColors.textSecondary)
-                    .padding(.vertical, HorizonSpacing.md)
+            if store.usesCatalog {
+                catalogPicker
             } else {
-                LazyVGrid(columns: [
-                    GridItem(.adaptive(minimum: 120, maximum: 140), spacing: HorizonSpacing.md)
-                ], spacing: HorizonSpacing.md) {
-                    ForEach(allWallpapers, id: \.self) { url in
-                        FocusWallpaperThumbnail(
-                            url: url,
-                            onSelect: {
-                                onWallpaperSelected(url)
-                            }
-                        )
-                    }
-                }
+                legacyNotice
             }
         }
         .fileImporter(
@@ -2217,42 +2202,151 @@ private struct FocusWallpaperPicker: View {
             allowsMultipleSelection: true
         ) { result in
             if case .success(let urls) = result {
-                // Import to global pool for Focus mode
-                do {
-                    try userWallpaperManager.importToGlobalPool(urls)
-                    loadWallpapers()
-                } catch {
-                    print("[FocusWallpaperPicker] Failed to import wallpapers: \(error)")
+                importForFocus(urls)
+            }
+        }
+        .onAppear { reloadSelection() }
+        .onChange(of: store.usesCatalog) { _, _ in reloadSelection() }
+    }
+
+    // MARK: Catalog mode
+
+    private var catalogPicker: some View {
+        VStack(alignment: .leading, spacing: HorizonSpacing.md) {
+            Text(statusText)
+                .font(HorizonTypography.callout)
+                .foregroundColor(HorizonColors.textSecondary)
+                .accessibilityLabel("Focus wallpapers status. \(statusText)")
+
+            if let importMessage {
+                Text(importMessage)
+                    .font(HorizonTypography.caption)
+                    .foregroundColor(HorizonColors.textTertiary)
+            }
+
+            if assets.isEmpty {
+                Text("No wallpapers in your library yet. Browse your computer to add some.")
+                    .font(HorizonTypography.callout)
+                    .foregroundColor(HorizonColors.textSecondary)
+                    .padding(.vertical, HorizonSpacing.md)
+            } else {
+                LazyVGrid(columns: [
+                    GridItem(.adaptive(minimum: 120, maximum: 140), spacing: HorizonSpacing.md)
+                ], spacing: HorizonSpacing.md) {
+                    ForEach(assets) { asset in
+                        if let url = store.canonicalURL(forAssetID: asset.id) {
+                            FocusWallpaperThumbnail(
+                                url: url,
+                                title: asset.originalFilename,
+                                isSelected: selectedAssetIDs.contains(asset.id),
+                                onSelect: { toggle(asset.id) }
+                            )
+                        }
+                    }
                 }
             }
         }
-        .onAppear {
-            loadWallpapers()
+    }
+
+    private var statusText: String {
+        let count = selectedAssetIDs.count
+        if isImporting { return "Adding photos…" }
+        if count == 0 {
+            return "Meetings use the Focus time slot above. Choose photos to use them instead."
+        }
+        return count == 1
+            ? "Meetings use 1 chosen photo."
+            : "Meetings use \(count) chosen photos."
+    }
+
+    private func toggle(_ assetID: String) {
+        FocusAssetSelection.toggle(assetID)
+        reloadSelection()
+    }
+
+    private func reloadSelection() {
+        selectedAssetIDs = Set(FocusAssetSelection.assetIDs())
+    }
+
+    /// Browse adds photos the ordinary way, into the active Vibe's
+    /// throughout-the-day pool, then marks the resulting assets for Focus.
+    /// Nothing is copied anywhere Focus-specific.
+    private func importForFocus(_ urls: [URL]) {
+        guard store.usesCatalog else {
+            store.isLibraryUpdateRequested = true
+            return
+        }
+        guard let mood = store.activeMood ?? store.ensurePlayableVibe() else { return }
+        isImporting = true
+        importMessage = nil
+        Task { @MainActor in
+            defer { isImporting = false }
+            do {
+                let summary = try await store.importAllDayWallpapers(from: urls, in: mood)
+                for assetID in summary.importedAssetIDs {
+                    FocusAssetSelection.add(assetID)
+                }
+                reloadSelection()
+                if summary.failedCount > 0 {
+                    importMessage = "\(summary.failedCount) file\(summary.failedCount == 1 ? "" : "s") couldn't be added."
+                }
+            } catch {
+                importMessage = "Couldn't add those photos: \(error.localizedDescription)"
+            }
         }
     }
 
-    private func loadWallpapers() {
-        var wallpapers: [URL] = []
-        // Load from global pool
-        wallpapers.append(contentsOf: userWallpaperManager.globalWallpapers())
-        // Load from each slot
-        for slot in TimeSlot.allCases {
-            wallpapers.append(contentsOf: userWallpaperManager.wallpapers(for: slot))
+    // MARK: Legacy mode
+
+    private var legacyNotice: some View {
+        VStack(alignment: .leading, spacing: HorizonSpacing.sm) {
+            Text("Meetings use the Focus time slot above. Choosing specific Focus photos needs the wallpaper library update.")
+                .font(HorizonTypography.callout)
+                .foregroundColor(HorizonColors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if legacyFocusPoolFileCount > 0 {
+                Text("\(legacyFocusPoolFileCount) photo\(legacyFocusPoolFileCount == 1 ? "" : "s") from an earlier Focus folder will be available after the update.")
+                    .font(HorizonTypography.caption)
+                    .foregroundColor(HorizonColors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Update Library…") {
+                store.isLibraryUpdateRequested = true
+            }
+            .buttonStyle(.bordered)
         }
-        // Remove duplicates
-        allWallpapers = Array(Set(wallpapers))
+        .padding(.vertical, HorizonSpacing.sm)
+    }
+
+    /// Read-only detection of the pre-Catalog Focus pool. Those files are
+    /// neither imported, moved, nor deleted here.
+    private var legacyFocusPoolFileCount: Int {
+        let root = store.storageRootURL.appendingPathComponent("UserWallpapers", isDirectory: true)
+        let folders = ["Global"] + TimeSlot.allCases.map(\.rawValue)
+        return folders.reduce(0) { total, name in
+            let contents = (try? FileManager.default.contentsOfDirectory(
+                at: root.appendingPathComponent(name, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            return total + contents.filter {
+                ["jpg", "jpeg", "png", "heic", "heif", "tiff", "bmp"].contains($0.pathExtension.lowercased())
+            }.count
+        }
     }
 }
 
 private struct FocusWallpaperThumbnail: View {
     let url: URL
+    let title: String
+    let isSelected: Bool
     let onSelect: () -> Void
     @State private var image: NSImage?
     @State private var isHovered = false
 
     var body: some View {
         Button(action: onSelect) {
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 if let image = image {
                     Image(nsImage: image)
                         .resizable()
@@ -2269,30 +2363,39 @@ private struct FocusWallpaperThumbnail: View {
                         }
                 }
 
-                // Hover overlay
-                if isHovered {
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, HorizonColors.primaryAccent)
+                        .padding(6)
+                        .accessibilityHidden(true)
+                        .allowsHitTesting(false)
+                } else if isHovered {
                     Rectangle()
                         .fill(Color.black.opacity(0.3))
                         .overlay {
                             VStack(spacing: 4) {
-                                Image(systemName: "checkmark.circle.fill")
+                                Image(systemName: "plus.circle.fill")
                                     .font(.system(size: 24))
                                     .foregroundColor(.white)
-                                Text("Select")
+                                Text("Use for Focus")
                                     .font(HorizonTypography.caption)
                                     .foregroundColor(.white)
                             }
                         }
+                        .allowsHitTesting(false)
                 }
             }
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: HorizonRadius.md, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: HorizonRadius.md, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: HorizonRadius.md, style: .continuous)
                 .strokeBorder(
-                    isHovered ? HorizonColors.primaryAccent : HorizonColors.glassStroke,
-                    lineWidth: isHovered ? 2 : 1
+                    isSelected || isHovered ? HorizonColors.primaryAccent : HorizonColors.glassStroke,
+                    lineWidth: isSelected || isHovered ? 2 : 1
                 )
         }
         .shadow(color: .black.opacity(isHovered ? 0.2 : 0.08), radius: isHovered ? 12 : 4, y: isHovered ? 6 : 2)
@@ -2300,16 +2403,14 @@ private struct FocusWallpaperThumbnail: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isHovered)
         .onHover { isHovered = $0 }
         .onAppear { loadImage() }
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "Used for Focus" : "Not used for Focus")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func loadImage() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            if let data = try? Data(contentsOf: url),
-               let nsImage = NSImage(data: data) {
-                DispatchQueue.main.async {
-                    self.image = nsImage
-                }
-            }
+        WallpaperPreviewLoader.shared.loadImage(from: url, maxPixelSize: 280) { image in
+            self.image = image
         }
     }
 }

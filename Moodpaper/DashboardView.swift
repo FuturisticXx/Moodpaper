@@ -1417,18 +1417,11 @@ private struct TodayPreviewSection: View {
             wallpaperManager.setWallpaperForSlot(slotID)
         case .oneShotSlot(let slotID):
             previewedMomentID = moment.id
-            wallpaperManager.setWallpaperForSlot(
-                slotID,
-                ignoreMood: true,
-                suppressContextualOverrides: true
-            )
+            wallpaperManager.setWallpaperForSlot(slotID)
         case .focusSlot(let slotID):
             previewedMomentID = moment.id
-            wallpaperManager.setWallpaperForSlot(
-                slotID,
-                ignoreMood: true,
-                suppressContextualOverrides: true
-            )
+            // Same candidates a real meeting would use.
+            wallpaperManager.setFocusWallpaper(fallbackSlot: slotID)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             withAnimation(.easeInOut(duration: 0.2)) {
