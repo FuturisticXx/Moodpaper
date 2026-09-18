@@ -9,11 +9,11 @@ struct DashboardView: View {
     @StateObject private var weatherService = HorizonWeatherService.shared
     @StateObject private var locationService = LocationService.shared
     @StateObject private var userWallpaperManager = UserWallpaperManager.shared
+    @ObservedObject private var moodStore = MoodStore.shared
+    @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation = false
 
-    // Get actual frequency from UserDefaults (matches ScheduleSettingsView)
     private var wallpapersPerDay: Int {
-        let stored = UserDefaults.standard.double(forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
-        return stored == 0 ? 8 : Int(stored)
+        Int(moodStore.effectiveWallpapersPerDay(for: moodStore.activeMood))
     }
 
     // Get actual wallpapers shown today from history
@@ -32,9 +32,24 @@ struct DashboardView: View {
         return (slot.title, HorizonColors.colorForSlot(slot.id))
     }
 
-
     private var nextChangeText: String {
-        wallpaperManager.nextChangeCountdown
+        if !wallpaperManager.isRunning {
+            return "Paused"
+        }
+        if pauseRotation {
+            return "Kept"
+        }
+        return wallpaperManager.nextChangeCountdown
+    }
+
+    private var nextChangeSubtitle: String {
+        if !wallpaperManager.isRunning {
+            return "Engine Off"
+        }
+        if pauseRotation {
+            return "Until Resume or Next"
+        }
+        return "Wallpaper Swap"
     }
 
     var body: some View {
@@ -88,7 +103,7 @@ struct DashboardView: View {
                     StatCard(
                         title: "Next Change",
                         value: nextChangeText,
-                        subtitle: "Wallpaper Swap",
+                        subtitle: nextChangeSubtitle,
                         icon: "clock.arrow.circlepath",
                         color: HorizonColors.secondaryAccent
                     )
@@ -175,6 +190,7 @@ private struct DashboardSupportFooter: View {
 private struct GreetingHeader: View {
     @ObservedObject var locationService: LocationService
     @EnvironmentObject var wallpaperManager: WallpaperManager
+    @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation = false
     @State private var appeared = false
 
     // DateFormatter is expensive to construct; hoist to file-static so we
@@ -208,6 +224,20 @@ private struct GreetingHeader: View {
     private var slotColor: Color {
         guard let slot = currentSlot else { return HorizonColors.primaryAccent }
         return HorizonColors.colorForSlot(slot.id)
+    }
+
+    private var playbackWhyLine: String {
+        if !wallpaperManager.isRunning {
+            return "Moodpaper is paused"
+        }
+        if pauseRotation {
+            return "Keeping this wallpaper"
+        }
+        return "Playing throughout the day"
+    }
+
+    private var playbackSourceLine: String {
+        MoodStore.shared.activeMood.map { "From \($0.displayName)" } ?? "Using photos from this Vibe"
     }
 
     var body: some View {
@@ -267,6 +297,15 @@ private struct GreetingHeader: View {
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 5)
             .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(0.1), value: appeared)
+
+            Text("\(playbackWhyLine) · \(playbackSourceLine)")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("\(playbackWhyLine). \(playbackSourceLine)")
+                .accessibilityAddTraits(.updatesFrequently)
+                .opacity(appeared ? 1 : 0)
+                .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(0.15), value: appeared)
         }
         .frame(maxWidth: .infinity)
         .onAppear { appeared = true }
@@ -566,7 +605,7 @@ private struct WeatherCard: View {
                     Spacer()
                     MetricChip(
                         label: "Vibe",
-                        value: moodStore.activeMood?.name ?? "None Yet",
+                        value: moodStore.activeMood?.displayName ?? "None Yet",
                         icon: "paintpalette.fill",
                         foregroundColor: chipForegroundColor
                     )
@@ -643,7 +682,6 @@ private struct CurrentWallpaperCard: View {
     @State private var isHovered = false
     @State private var hostingScreen: NSScreen?
     @AppStorage(HorizonScheduleDefaults.pauseRotationKey) private var pauseRotation: Bool = false
-    @State private var showingUnpinAlert = false
     private let appDidBecomeActive = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
     private let activeSpaceDidChange = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
     // After waking from sleep, the OS may have changed the desktop image
@@ -731,30 +769,33 @@ private struct CurrentWallpaperCard: View {
                     .frame(height: 60)
             }
 
-            // Skip button, top trailing
             VStack {
-                HStack {
-                    // Pin indicator
+                HStack(spacing: 8) {
                     if pauseRotation {
                         Button {
-                            showingUnpinAlert = true
+                            pauseRotation = false
                         } label: {
-                            Image(systemName: "pin.fill")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(6)
-                                .background(Circle().fill(Color.yellow.opacity(0.8)))
-                                .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
-                                .padding(10)
+                            heroActionLabel(title: "Resume")
                         }
                         .buttonStyle(.plain)
-                        .help("Click to unpin")
-                        .accessibilityLabel("Unpin current wallpaper")
+                        .help("Return control to the active Vibe")
+                        .accessibilityLabel("Resume")
+                        .accessibilityHint("Returns wallpaper changes to the active Vibe without rotating immediately")
+                    } else {
+                        Button {
+                            pauseRotation = true
+                        } label: {
+                            heroActionLabel(title: "Keep")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Keep this wallpaper until you Resume or tap Next")
+                        .accessibilityLabel("Keep This Wallpaper")
                     }
 
                     Spacer()
 
                     Button {
+                        pauseRotation = false
                         wallpaperManager.skipToNext()
                     } label: {
                         HStack(spacing: 5) {
@@ -768,7 +809,7 @@ private struct CurrentWallpaperCard: View {
                             } else {
                                 Image(systemName: "forward.fill")
                                     .font(.system(size: 10, weight: .semibold))
-                                Text("Skip")
+                                Text("Next")
                                     .font(.system(size: 12, weight: .semibold))
                             }
                         }
@@ -776,15 +817,7 @@ private struct CurrentWallpaperCard: View {
                         .frame(minWidth: 62)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(.ultraThinMaterial)
-                                .environment(\.colorScheme, .dark)
-                                .overlay {
-                                    Capsule()
-                                        .strokeBorder(.white.opacity(0.25), lineWidth: 0.5)
-                                }
-                        )
+                        .background(heroActionCapsule)
                         .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                     }
                     .buttonStyle(.plain)
@@ -792,25 +825,17 @@ private struct CurrentWallpaperCard: View {
                     .accessibilityLabel(
                         wallpaperManager.isChangingWallpaper
                             ? "Changing wallpaper"
-                            : "Skip to next wallpaper"
+                            : "Next wallpaper"
                     )
                     .help(
                         wallpaperManager.isChangingWallpaper
                             ? "Changing wallpaper"
-                            : "Skip to next wallpaper"
+                            : "Next wallpaper"
                     )
-                    .padding(10)
                 }
+                .padding(10)
 
                 Spacer()
-            }
-            .alert("Unpin Wallpaper", isPresented: $showingUnpinAlert) {
-                Button("Cancel", role: .cancel) { }
-                Button("Unpin", role: .destructive) {
-                    pauseRotation = false
-                }
-            } message: {
-                Text("Are you sure you want to unpin this wallpaper? Rotation will resume.")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -847,6 +872,27 @@ private struct CurrentWallpaperCard: View {
         .onAppear {
             deferWallpaperSyncAndPreviewRefresh()
         }
+    }
+
+    @ViewBuilder
+    private func heroActionLabel(title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(heroActionCapsule)
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+    }
+
+    private var heroActionCapsule: some View {
+        Capsule()
+            .fill(.ultraThinMaterial)
+            .environment(\.colorScheme, .dark)
+            .overlay {
+                Capsule()
+                    .strokeBorder(.white.opacity(0.25), lineWidth: 0.5)
+            }
     }
 
     private func openLibrary() {
@@ -972,7 +1018,7 @@ private struct MoodToggleCard: View {
                         .font(HorizonTypography.caption)
                         .foregroundColor(HorizonColors.textSecondary)
 
-                    Text(store.activeMood?.name ?? "No Vibe Yet")
+                    Text(store.activeMood?.displayName ?? "No Vibe Yet")
                         .font(HorizonTypography.title2)
                         .fontWeight(.semibold)
                         .foregroundColor(HorizonColors.textPrimary)
@@ -1301,6 +1347,26 @@ private struct TodayPreviewSection: View {
         return !enabledSlots.isEmpty && enabledSlots.count < allSlots.count
     }
 
+    private var todayPreviewStatusText: String {
+        if !wallpaperManager.isRunning {
+            return "Paused"
+        }
+        if pauseRotation {
+            return "Keeping"
+        }
+        return "Playing"
+    }
+
+    private var todayPreviewStatusColor: Color {
+        if !wallpaperManager.isRunning {
+            return HorizonColors.textSecondary
+        }
+        if pauseRotation {
+            return HorizonColors.primaryAccent
+        }
+        return HorizonColors.secondaryAccent
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: HorizonSpacing.lg) {
             HStack {
@@ -1316,8 +1382,8 @@ private struct TodayPreviewSection: View {
                 Spacer()
 
                 HorizonBadge(
-                    text: pauseRotation ? "Paused" : "Live",
-                    color: pauseRotation ? HorizonColors.textSecondary : HorizonColors.secondaryAccent,
+                    text: todayPreviewStatusText,
+                    color: todayPreviewStatusColor,
                     size: .small
                 )
             }

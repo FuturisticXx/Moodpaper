@@ -98,16 +98,23 @@ nonisolated fileprivate struct WallpaperScreenApplyResult: Sendable {
 }
 
 extension WallpaperManager {
-    /// Returns the dwell interval the rotation engine should use right now,
-    /// derived from the global wallpapersPerDay setting. Pure function — no
-    /// state reads — so tests can lock the contract without touching
-    /// singletons. Use `currentDwellInterval` from runtime code; this is
-    /// the testable seam.
+    /// Pure dwell math from a wallpapers-per-day count. Tests lock this
+    /// without touching singletons. Runtime uses `currentDwellInterval`.
     static func dwellSeconds(
         globalWallpapersPerDay: Int
     ) -> TimeInterval {
         let safe = max(globalWallpapersPerDay, 1)
         return TimeInterval(86400 / safe)
+    }
+
+    /// Playback cadence uses the active Vibe when it has a stored How Often.
+    /// With no active Vibe, the Settings default (legacy global key) applies.
+    static func wallpapersPerDayForPlayback(
+        activeVibeWallpapersPerDay: Double?,
+        globalStoredWallpapersPerDay: Double
+    ) -> Int {
+        let stored = activeVibeWallpapersPerDay ?? globalStoredWallpapersPerDay
+        return Int(HorizonScheduleDefaults.resolvedWallpapersPerDay(stored))
     }
 
     /// Decides whether the system-reported desktop state has caught up with
@@ -152,7 +159,7 @@ class WallpaperManager: ObservableObject {
     /// all use the same source-of-truth math.
     var currentDwellInterval: TimeInterval {
         Self.dwellSeconds(
-            globalWallpapersPerDay: wallpapersPerDayFromDefaults()
+            globalWallpapersPerDay: wallpapersPerDayForPlayback()
         )
     }
 
@@ -778,8 +785,8 @@ class WallpaperManager: ObservableObject {
         let needsInitialSet = lastSlot.isEmpty
 
         // Dwell interval is needed both by the launch-preservation check and
-        // the rotation gate below; compute it once. Derives from the global
-        // wallpapersPerDay setting. See dwellSeconds().
+        // the rotation gate below; compute it once. Derives from the active
+        // Vibe's How Often (falling back to the Settings default). See dwellSeconds().
         let minimumInterval = currentDwellInterval
 
         // Launch preservation: lastSlot is in-memory only, so every launch
@@ -788,8 +795,11 @@ class WallpaperManager: ObservableObject {
         // the persisted dwell clock hasn't expired, keep it and just repair
         // the bookkeeping.
         let persistedIdentifier = currentWallpaperIdentifier()
+        // A persisted identifier the store cannot resolve (for example a
+        // Catalog asset path while the store is on the legacy model) is not
+        // a wallpaper to preserve; normal selection runs instead.
         let preservePersistedAtLaunch = needsInitialSet && Self.shouldPreservePersistedWallpaperAtLaunch(
-            hasPersistedWallpaper: persistedIdentifier != nil,
+            hasPersistedWallpaper: persistedIdentifier.flatMap { wallpaperURL(for: $0) } != nil,
             persistedWallpaperSlot: nil,
             resolvedSlot: resolvedSlot,
             secondsSinceLastChange: lastWallpaperChangeAt.map { Date().timeIntervalSince($0) },
@@ -855,14 +865,13 @@ class WallpaperManager: ObservableObject {
         return lastWallpaperChangeAt.addingTimeInterval(currentDwellInterval)
     }
 
-    private func wallpapersPerDayFromDefaults() -> Int {
-        let defaults = UserDefaults.standard
-        let stored = defaults.double(forKey: HorizonScheduleDefaults.wallpapersPerDayKey)
-        if stored == 0 {
-            return 8
-        }
-
-        return Int(min(max(stored, 1), 48))
+    private func wallpapersPerDayForPlayback() -> Int {
+        Self.wallpapersPerDayForPlayback(
+            activeVibeWallpapersPerDay: MoodStore.shared.activeMood?.wallpapersPerDay,
+            globalStoredWallpapersPerDay: UserDefaults.standard.double(
+                forKey: HorizonScheduleDefaults.wallpapersPerDayKey
+            )
+        )
     }
 
     func skipToPrevious() {
@@ -978,6 +987,7 @@ class WallpaperManager: ObservableObject {
         }
         lastSlot = resolvedSlot
         lastWallpaperChangeAt = Date()
+        updateNextChangeCountdown()
     }
 
     /// Diagnostics: clears lastSlot so the next checkAndUpdateWallpaper() call
@@ -1187,11 +1197,12 @@ class WallpaperManager: ObservableObject {
         }
     }
 
-    /// Resolves either a bundled wallpaper name or a user-added absolute file path.
+    /// Resolves either a bundled wallpaper name or a user-added absolute file
+    /// path. Absolute paths always go through the store so a persisted
+    /// Catalog asset path cannot bypass a store that is on the legacy model.
     private func wallpaperURL(for identifier: String) -> URL? {
         if identifier.hasPrefix("/") {
-            let fileURL = URL(fileURLWithPath: identifier)
-            return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
+            return MoodStore.shared.resolvePlaybackURL(forIdentifier: identifier)
         }
         return bundleURL(for: identifier)
     }
@@ -1996,14 +2007,7 @@ extension WallpaperManager {
     }
 
     private func preparedWallpaperDirectory() throws -> URL {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = appSupport
-            .appendingPathComponent("Moodpaper", isDirectory: true)
+        let directory = LibraryMigration.defaultApplicationSupportLibraryRoot()
             .appendingPathComponent("PreparedWallpapers", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory

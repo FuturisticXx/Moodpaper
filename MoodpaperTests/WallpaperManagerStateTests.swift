@@ -23,6 +23,38 @@ final class WallpaperManagerStateTests: XCTestCase {
         )
     }
 
+    func testPlaybackCadencePrefersActiveVibeOverGlobalDefault() {
+        XCTAssertEqual(
+            WallpaperManager.wallpapersPerDayForPlayback(
+                activeVibeWallpapersPerDay: 4,
+                globalStoredWallpapersPerDay: 12
+            ),
+            4
+        )
+        XCTAssertEqual(
+            WallpaperManager.wallpapersPerDayForPlayback(
+                activeVibeWallpapersPerDay: nil,
+                globalStoredWallpapersPerDay: 12
+            ),
+            12
+        )
+        XCTAssertEqual(
+            WallpaperManager.wallpapersPerDayForPlayback(
+                activeVibeWallpapersPerDay: nil,
+                globalStoredWallpapersPerDay: 0
+            ),
+            8
+        )
+        XCTAssertEqual(
+            WallpaperManager.dwellSeconds(globalWallpapersPerDay: 4),
+            21600
+        )
+        XCTAssertEqual(
+            WallpaperManager.dwellSeconds(globalWallpapersPerDay: 24),
+            3600
+        )
+    }
+
     func testSystemDNDDoesNotBlockActiveFocusMeeting() {
         XCTAssertTrue(
             WallpaperManager.shouldSkipWallpaperUpdateForDND(
