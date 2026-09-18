@@ -45,7 +45,10 @@ final class LibraryUpdateAuthorizationTests: XCTestCase {
         MoodStore(baseURL: root, defaults: defaults)
     }
 
-    private func writePNG(to url: URL) throws {
+    private func writePNG(
+        to url: URL,
+        color: CGColor = CGColor(red: 0.2, green: 0.3, blue: 0.9, alpha: 1)
+    ) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
         )
@@ -54,7 +57,7 @@ final class LibraryUpdateAuthorizationTests: XCTestCase {
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
         ))
-        context.setFillColor(CGColor(red: 0.2, green: 0.3, blue: 0.9, alpha: 1))
+        context.setFillColor(color)
         context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
         let image = try XCTUnwrap(context.makeImage())
         let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
@@ -463,5 +466,102 @@ final class LibraryUpdateAuthorizationTests: XCTestCase {
         let vibeID = try XCTUnwrap(state.catalog.memberships.first?.moodID)
         try writePNG(to: root.appendingPathComponent("Moods/\(vibeID)/AllDay/added-later.png"))
         try await assertStampRefused("uncatalogued legacy file")
+    }
+
+    // MARK: - Ordinary Catalog persistence after trusted adoption
+
+    /// Migration authorization is consumed after Update Library. Ordinary
+    /// Browse/import must still persist: trust comes from the completed,
+    /// authorized journal, not from a live one-shot grant.
+    func testTrustedAdoptedCatalogPersistsOrdinaryImportWithoutMigrationAuthorization() async throws {
+        try seedLegacyLibrary()
+        let store = makeStore()
+        _ = try await store.updateLibrary()
+        XCTAssertTrue(store.usesCatalog)
+        XCTAssertTrue(LibraryMigration.isMigrationBlocked(for: root), "migration itself stays gated")
+        XCTAssertTrue(LibraryMigration.canAdoptPublishedCatalog(at: root))
+        XCTAssertFalse(LibraryMigration.isMigrationAuthorized(for: root))
+
+        let before = try LibraryMigration.loadCatalog(from: root)
+        XCTAssertEqual(before.assets.count, 1)
+        let extra = root.appendingPathComponent("browse-import.png")
+        try writePNG(to: extra, color: CGColor(red: 0.9, green: 0.2, blue: 0.1, alpha: 1))
+        let vibe = try XCTUnwrap(store.moods.first)
+
+        let summary = try await store.importAllDayWallpapers(from: [extra], in: vibe)
+        XCTAssertEqual(summary.importedCount, 1)
+        XCTAssertEqual(summary.failedCount, 0)
+        let importedID = try XCTUnwrap(summary.importedAssetIDs.first)
+
+        let onDisk = try LibraryMigration.loadCatalog(from: root)
+        XCTAssertEqual(onDisk.assets.count, 2)
+        XCTAssertTrue(onDisk.assets.contains { $0.id == importedID })
+        XCTAssertTrue(onDisk.memberships.contains {
+            $0.assetID == importedID && $0.moodID == vibe.id && $0.throughoutTheDay
+        })
+        let canonical = LibraryMigration.canonicalURL(
+            for: try XCTUnwrap(onDisk.asset(id: importedID)),
+            libraryRoot: root
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canonical.path))
+
+        FocusAssetSelection.setAssetIDs([importedID], defaults: defaults)
+        let relaunch = makeStore()
+        XCTAssertTrue(relaunch.usesCatalog)
+        XCTAssertNotNil(relaunch.catalog?.asset(id: importedID))
+        XCTAssertEqual(relaunch.focusCandidateURLs(assetIDs: [importedID]), [canonical])
+        XCTAssertEqual(FocusAssetSelection.assetIDs(defaults: defaults), [importedID])
+    }
+
+    /// catalog.json on a protected root is not enough. Without a trusted
+    /// completed journal, Catalog writes stay blocked.
+    func testUntrustedPublishedCatalogCannotPersistOrdinaryImport() async throws {
+        _ = try completeUnrecordedMigration()
+        let store = makeStore()
+        XCTAssertFalse(store.usesCatalog)
+        XCTAssertTrue(store.needsLibraryUpdate)
+        let catalogBefore = try Data(contentsOf: catalogURL)
+        let extra = root.appendingPathComponent("should-not-catalog.png")
+        try writePNG(to: extra, color: CGColor(red: 0.1, green: 0.8, blue: 0.2, alpha: 1))
+        let vibe = try XCTUnwrap(store.moods.first)
+
+        let summary = try await store.importAllDayWallpapers(from: [extra], in: vibe)
+        XCTAssertEqual(summary.importedCount, 1)
+        XCTAssertFalse(store.usesCatalog)
+        XCTAssertEqual(try Data(contentsOf: catalogURL), catalogBefore)
+        XCTAssertEqual(try LibraryMigration.loadCatalog(from: root).assets.count, 1)
+        XCTAssertNil(try LibraryMigration.loadJournal(from: root).authorization)
+    }
+
+    /// If catalog.json cannot be written, a new canonical file must not remain.
+    func testFailedCatalogSaveDoesNotLeaveOrphanCanonicalAsset() async throws {
+        try seedLegacyLibrary()
+        let store = makeStore()
+        _ = try await store.updateLibrary()
+        let assetsRoot = WallpaperCatalogFile.assetsRoot(in: root)
+        let filesBefore = Set(
+            (try FileManager.default.contentsOfDirectory(
+                at: assetsRoot, includingPropertiesForKeys: nil
+            )).map(\.lastPathComponent)
+        )
+        let assetCountBefore = try XCTUnwrap(store.catalog?.assets.count)
+
+        try FileManager.default.removeItem(at: catalogURL)
+        try FileManager.default.createDirectory(at: catalogURL, withIntermediateDirectories: true)
+
+        let extra = root.appendingPathComponent("orphan-attempt.png")
+        try writePNG(to: extra, color: CGColor(red: 0.2, green: 0.9, blue: 0.4, alpha: 1))
+        let vibe = try XCTUnwrap(store.moods.first)
+        let summary = try await store.importAllDayWallpapers(from: [extra], in: vibe)
+        XCTAssertEqual(summary.importedCount, 0)
+        XCTAssertEqual(summary.failedCount, 1)
+        XCTAssertEqual(store.catalog?.assets.count, assetCountBefore)
+
+        let filesAfter = Set(
+            (try FileManager.default.contentsOfDirectory(
+                at: assetsRoot, includingPropertiesForKeys: nil
+            )).map(\.lastPathComponent)
+        )
+        XCTAssertEqual(filesAfter, filesBefore)
     }
 }

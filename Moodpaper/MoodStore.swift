@@ -1125,9 +1125,15 @@ final class MoodStore: ObservableObject {
         try? persistCatalog()
     }
 
+    /// Ordinary Catalog writes after a trusted adoption. This is not the
+    /// migration gate: `isMigrationBlocked` still forbids migrate/publish
+    /// without a live exact-root grant. Persistence is allowed when Phase 6A
+    /// would adopt this catalog — completed authorized journal, live
+    /// authorization, or an unprotected root — and never merely because
+    /// `catalog.json` exists.
     private func persistCatalog() throws {
         guard let catalog, !isLibraryAccessBlocked else { return }
-        if LibraryMigration.isMigrationBlocked(for: storageRootURL) {
+        guard LibraryMigration.canAdoptPublishedCatalog(at: storageRootURL) else {
             throw LibraryMigration.MigrationBlockedError()
         }
         let encoder = JSONEncoder()
@@ -1137,6 +1143,25 @@ final class MoodStore: ObservableObject {
             to: WallpaperCatalogFile.catalogURL(in: storageRootURL),
             options: .atomic
         )
+    }
+
+    /// Apply an in-memory catalog change, persist it, and roll back both
+    /// memory and any newly created canonical file if the write fails.
+    private func commitCatalog(
+        _ next: WallpaperCatalog,
+        revertingTo previous: WallpaperCatalog,
+        rollingBack newCanonical: URL? = nil
+    ) throws {
+        catalog = next
+        do {
+            try persistCatalog()
+        } catch {
+            catalog = previous
+            if let newCanonical {
+                try? fileManager.removeItem(at: newCanonical)
+            }
+            throw error
+        }
     }
 
     private func catalogURLs(in mood: Mood, where predicate: (WallpaperMembership) -> Bool) -> [URL] {
@@ -1303,6 +1328,7 @@ final class MoodStore: ObservableObject {
         guard var catalog else {
             throw LibraryMigration.MigrationBlockedError()
         }
+        let previous = catalog
         if let existing = resolveAsset(for: fileURL) {
             var membership = catalog.memberships.first {
                 $0.assetID == existing.id && $0.moodID == mood.id
@@ -1314,8 +1340,7 @@ final class MoodStore: ObservableObject {
             )
             apply(placement, to: &membership)
             catalog.replaceMembership(membership)
-            self.catalog = catalog
-            saveCatalog()
+            try commitCatalog(catalog, revertingTo: previous)
             return existing.id
         }
 
@@ -1344,8 +1369,7 @@ final class MoodStore: ObservableObject {
                     == WallpaperCatalogFile.assetsRoot(in: storageRootURL).standardizedFileURL {
                     try? fileManager.removeItem(at: fileURL)
                 }
-                self.catalog = catalog
-                saveCatalog()
+                try commitCatalog(catalog, revertingTo: previous)
                 return match.id
             }
         }
@@ -1359,9 +1383,13 @@ final class MoodStore: ObservableObject {
             at: destination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        let createdCanonical: URL?
         if copyIfUntracked {
             if fileManager.fileExists(atPath: destination.path) == false {
                 try fileManager.copyItem(at: fileURL, to: destination)
+                createdCanonical = destination
+            } else {
+                createdCanonical = nil
             }
         } else {
             if fileURL != destination {
@@ -1369,6 +1397,9 @@ final class MoodStore: ObservableObject {
                     try fileManager.removeItem(at: destination)
                 }
                 try fileManager.moveItem(at: fileURL, to: destination)
+                createdCanonical = destination
+            } else {
+                createdCanonical = destination
             }
         }
         let asset = WallpaperAsset(
@@ -1392,8 +1423,7 @@ final class MoodStore: ObservableObject {
         )
         apply(placement, to: &membership)
         catalog.replaceMembership(membership)
-        self.catalog = catalog
-        saveCatalog()
+        try commitCatalog(catalog, revertingTo: previous, rollingBack: createdCanonical)
         return assetID
     }
 

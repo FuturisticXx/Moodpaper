@@ -365,6 +365,18 @@ final class ReleaseReadinessTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertFalse(store.contains("authorizationEnvironmentKey"), "MoodStore must not read or store the authorization itself")
+        let persistStart = try XCTUnwrap(store.range(of: "private func persistCatalog() throws"))
+        let persistBody = store[persistStart.upperBound...]
+        let persistEnd = persistBody.range(of: "\n    private func ")?.lowerBound ?? persistBody.endIndex
+        let persist = persistBody[..<persistEnd]
+        XCTAssertTrue(
+            persist.contains("canAdoptPublishedCatalog(at: storageRootURL)"),
+            "ordinary Catalog writes use adoption trust, not a live migration grant"
+        )
+        XCTAssertFalse(
+            persist.contains("isMigrationBlocked(for: storageRootURL)"),
+            "persistCatalog must not reuse the migration authorization gate"
+        )
     }
 
     /// The library update prompt speaks to the user, never in engine terms,
