@@ -537,6 +537,74 @@ final class MoodStoreTests: XCTestCase {
         XCTAssertEqual(fired, 0)
     }
 
+    // MARK: First-run starter Vibe refresh
+
+    func testCreateStarterVibeOnFreshLibraryRequestsOnePostImportRefreshOfPopulatedVibe() async throws {
+        let store = makeStore()
+        let art = try makeStarterArt()
+        var observedCounts: [Int] = []
+        store.onActiveMoodChange = {
+            guard let mood = store.activeMood else {
+                observedCounts.append(0)
+                return
+            }
+            observedCounts.append(store.totalWallpaperCount(in: mood))
+        }
+
+        let created = try await store.createStarterVibe(named: "Daybreak", artBySlotID: art)
+        let vibe = try XCTUnwrap(created)
+
+        XCTAssertEqual(store.activeMoodID, vibe.id)
+        XCTAssertEqual(store.totalWallpaperCount(in: vibe), TimeSlot.allCases.count)
+        XCTAssertEqual(
+            observedCounts,
+            [0, TimeSlot.allCases.count],
+            "create() may auto-activate the empty first Vibe, but the post-import refresh must see every starter wallpaper"
+        )
+    }
+
+    func testCreateStarterVibeWithExistingActiveVibeDoesNotDuplicateRefresh() async throws {
+        let store = makeStore()
+        let existing = try XCTUnwrap(store.create(name: "Already Here"))
+        let art = try makeStarterArt()
+        var observedCounts: [Int] = []
+        store.onActiveMoodChange = {
+            guard let mood = store.activeMood else {
+                observedCounts.append(0)
+                return
+            }
+            observedCounts.append(store.totalWallpaperCount(in: mood))
+        }
+
+        let created = try await store.createStarterVibe(named: "Daybreak", artBySlotID: art)
+        let vibe = try XCTUnwrap(created)
+
+        XCTAssertNotEqual(existing.id, vibe.id)
+        XCTAssertEqual(store.activeMoodID, vibe.id)
+        XCTAssertEqual(store.totalWallpaperCount(in: vibe), TimeSlot.allCases.count)
+        XCTAssertEqual(
+            observedCounts,
+            [TimeSlot.allCases.count],
+            "non-first-run creation should refresh once via activate after import, not twice"
+        )
+    }
+
+    private func makeStarterArt() throws -> [String: URL] {
+        let directory = baseURL.appendingPathComponent("starter-art")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var art: [String: URL] = [:]
+        for (index, slot) in TimeSlot.allCases.enumerated() {
+            let url = directory.appendingPathComponent("starter-\(slot.slotID).png")
+            let step = CGFloat(index + 1) / CGFloat(TimeSlot.allCases.count + 1)
+            try writeTestImage(
+                to: url,
+                color: CGColor(red: step, green: 1 - step, blue: 0.35 + step / 2, alpha: 1)
+            )
+            art[slot.slotID] = url
+        }
+        return art
+    }
+
     // MARK: Shape My Day assignments
 
     func testEmptyDetailedPeriodFallsBackToVibePhotos() throws {

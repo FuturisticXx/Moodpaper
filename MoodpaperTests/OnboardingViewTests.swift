@@ -50,6 +50,63 @@ final class OnboardingViewTests: XCTestCase {
         )
     }
 
+    // MARK: - Set My Desktop wait
+
+    func test_commitWait_nameChangeSucceedsImmediately() {
+        XCTAssertEqual(
+            OnboardingCommitWait.decision(
+                nameChanged: true, applyStarted: true, applyInProgress: true, elapsed: 0.5
+            ),
+            .succeeded
+        )
+    }
+
+    func test_commitWait_holdsWhileApplyIsInProgress() {
+        XCTAssertEqual(
+            OnboardingCommitWait.decision(
+                nameChanged: false, applyStarted: true, applyInProgress: true, elapsed: 12.2
+            ),
+            .waiting
+        )
+    }
+
+    func test_commitWait_failsOnceApplyFinishesWithoutNameChange() {
+        XCTAssertEqual(
+            OnboardingCommitWait.decision(
+                nameChanged: false, applyStarted: true, applyInProgress: false, elapsed: 3
+            ),
+            .failed
+        )
+    }
+
+    func test_commitWait_applyNeverStartsWaitsUntilSafetyValve() {
+        XCTAssertEqual(
+            OnboardingCommitWait.decision(
+                nameChanged: false, applyStarted: false, applyInProgress: false, elapsed: 24.9
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            OnboardingCommitWait.decision(
+                nameChanged: false, applyStarted: false, applyInProgress: false, elapsed: 25
+            ),
+            .failed
+        )
+    }
+
+    func test_commitWait_lateSuccessStillSucceeds() {
+        XCTAssertEqual(
+            OnboardingCommitWait.decision(
+                nameChanged: true, applyStarted: true, applyInProgress: false, elapsed: 19
+            ),
+            .succeeded
+        )
+    }
+
+    func test_commitWait_safetyValveOutlastsEngineConfirmationBudget() {
+        XCTAssertGreaterThan(OnboardingCommitWait.safetyValve, 20)
+    }
+
     func test_allOnboardingCopy_containsNoEmDashes() {
         let allStrings: [String] = [
             OnboardingCopy.coverEyebrow, OnboardingCopy.coverTitle, OnboardingCopy.coverBody,

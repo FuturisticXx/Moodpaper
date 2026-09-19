@@ -44,6 +44,44 @@ enum OnboardingCopy {
     static let backLink = "Back"
 }
 
+/// Decides when the Set My Desktop wait is over. Pure so the contract can be
+/// tested without a real desktop, mirroring
+/// `WallpaperManager.desktopApplyConfirmationDecision`.
+///
+/// The engine already knows when an apply is finished: `isChangingWallpaper`
+/// flips true when it starts and back to false when it returns, and
+/// `currentWallpaperName` changes only once macOS confirmed the new image.
+/// Waiting on those two signals means onboarding stays open exactly as long
+/// as the engine is still working (up to its own 20 s confirmation budget)
+/// instead of racing it with a shorter deadline, which is how a change that
+/// macOS confirmed at 12.2 s used to show the "taking longer" fallback.
+enum OnboardingCommitWait {
+    enum Decision: Equatable {
+        case waiting
+        case succeeded
+        case failed
+    }
+
+    /// Only reached when the engine never starts an apply at all (no display,
+    /// nothing to apply). Sized to outlast the engine's 20 s confirmation
+    /// budget plus coalescing and poll slack, so it never fires on a slow but
+    /// healthy apply.
+    static let safetyValve: TimeInterval = 25
+
+    nonisolated static func decision(
+        nameChanged: Bool,
+        applyStarted: Bool,
+        applyInProgress: Bool,
+        elapsed: TimeInterval,
+        safetyValve: TimeInterval = OnboardingCommitWait.safetyValve
+    ) -> Decision {
+        if nameChanged { return .succeeded }
+        if applyStarted, !applyInProgress { return .failed }
+        if elapsed >= safetyValve { return .failed }
+        return .waiting
+    }
+}
+
 enum VibeNaming {
     static let suggestions = ["Calm", "Focused", "Dreamy", "Energized"]
 
@@ -318,12 +356,15 @@ struct OnboardingView: View {
     /// wallpaper on screen, then lingers a beat so the change is watched
     /// rather than discovered. Preparing the image takes a few seconds, so a
     /// fixed delay closed the window before anything happened, which loses
-    /// the one moment the whole flow exists to deliver. The timeout keeps a
-    /// stalled engine from trapping the user in onboarding.
+    /// the one moment the whole flow exists to deliver. The wait follows the
+    /// engine's own apply state (see `OnboardingCommitWait`) so a slow macOS
+    /// confirmation is not mistaken for a stall; the safety valve only covers
+    /// an apply that never starts.
     private func waitForDesktopChange() {
         let manager = WallpaperManager.shared
         let before = manager.currentWallpaperName
-        let deadline = Date().addingTimeInterval(12)
+        let startedAt = Date()
+        var applyStarted = false
 
         func finish() {
             guard isCommitting else { return }
@@ -333,13 +374,18 @@ struct OnboardingView: View {
         }
 
         func poll() {
-            if manager.currentWallpaperName != before {
+            if manager.isChangingWallpaper { applyStarted = true }
+            switch OnboardingCommitWait.decision(
+                nameChanged: manager.currentWallpaperName != before,
+                applyStarted: applyStarted,
+                applyInProgress: manager.isChangingWallpaper,
+                elapsed: Date().timeIntervalSince(startedAt)
+            ) {
+            case .succeeded:
                 // Let the applied wallpaper sit on screen before the window
                 // fades, so the user sees it change and not just the result.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { finish() }
-                return
-            }
-            guard Date() < deadline else {
+            case .failed:
                 // Closing silently here was indistinguishable from success and
                 // left the user with an unchanged desktop and no explanation.
                 // Hold the window open, say what happened, and let them leave
@@ -348,9 +394,9 @@ struct OnboardingView: View {
                 guard isCommitting else { return }
                 isCommitting = false
                 commitTimedOut = true
-                return
+            case .waiting:
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { poll() }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { poll() }
         }
         poll()
     }
