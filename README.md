@@ -12,11 +12,11 @@ Moodpaper ships no wallpaper library. It does include a nine-image starter set, 
 
 - **Your photos:** Import individual images, drag in files, or load an entire folder into a Vibe. Moodpaper copies supported images into its sandboxed Application Support folder.
 - **Nine time slots:** Deep Night, Dawn, Sunrise, Morning, Midday, Afternoon, Golden Hour, Dusk, and Evening.
-- **All Day wallpaper pool:** Give each Vibe one shared pool that works immediately across the whole day, then add time-specific favorites whenever you want.
-- **Named Vibes:** Name your first Vibe during the welcome, then create, rename, duplicate, delete, activate, and customize complete wallpaper collections. New Vibes flow directly into wallpaper import.
+- **Throughout the day:** Give each Vibe a shared set of photos that can play at any hour, then assign favorites to a time of day when you want them.
+- **Named Vibes:** Name your first Vibe during the welcome, then create, rename, duplicate, delete, activate, and customize complete wallpaper collections. New Vibes flow directly into wallpaper import. Each Vibe has its own How Often setting.
 - **A welcome that sets your desktop:** Scrub a dial across the day to watch the light change, name what you see, and your real desktop changes once before the window closes. Replay it anytime from Settings.
 - **Automatic scheduling:** Move through the day using configurable time slots and local sunrise and sunset timing.
-- **Safe empty slots:** A time slot uses its own images when available, falls back to the Vibe's All Day pool, and holds the current wallpaper only when both are empty.
+- **Safe empty slots:** A time of day uses its own images when available, falls back to photos that play throughout the day, and holds the current wallpaper only when both are empty.
 - **Resilient weather display:** Refresh local weather at launch, after wake and app activation, and on demand without letting weather choose your wallpaper. Moodpaper keeps a recent successful reading visible during temporary provider failures and retries automatically.
 - **Focus Mode:** Optionally use calendar access to apply your Focus wallpapers during meetings.
 - **Multiple displays and Spaces:** Keep wallpaper behavior consistent across connected displays and macOS Spaces.
@@ -34,11 +34,11 @@ Your photos, Vibes, preferences, history, and diagnostics stay on your Mac. Mood
 
 ## Install
 
-1. Download the latest notarized DMG from the [GitHub Releases page](https://github.com/FuturisticXx/Moodpaper/releases/latest), or download [Moodpaper-1.0.0.dmg](https://github.com/FuturisticXx/Moodpaper/releases/download/v1.0.0/Moodpaper-1.0.0.dmg) directly.
+1. Download the latest notarized DMG from the [GitHub Releases page](https://github.com/FuturisticXx/Moodpaper/releases/latest).
 2. Open the disk image and drag Moodpaper into Applications.
 3. Open Moodpaper. The signed and notarized release should pass Gatekeeper without a security bypass.
 
-The v1.0.0 checksum is published alongside the DMG as [Moodpaper-1.0.0.dmg.sha256](https://github.com/FuturisticXx/Moodpaper/releases/download/v1.0.0/Moodpaper-1.0.0.dmg.sha256).
+Each release publishes a SHA-256 checksum next to the DMG. Verify with `shasum -a 256 -c Moodpaper-<version>.dmg.sha256`. The previous public release is [v1.0.0](https://github.com/FuturisticXx/Moodpaper/releases/tag/v1.0.0).
 
 ## Development
 
