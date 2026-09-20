@@ -5,22 +5,22 @@ final class OnboardingViewTests: XCTestCase {
 
     func test_coverCopy_matchesSpec() {
         XCTAssertEqual(OnboardingCopy.coverEyebrow, "MOODPAPER")
-        XCTAssertEqual(OnboardingCopy.coverTitle, "Your desktop has moods.")
+        XCTAssertEqual(OnboardingCopy.coverTitle, "Make your desktop feel alive")
         XCTAssertEqual(
             OnboardingCopy.coverBody,
-            "Wallpapers that drift through your day, from first light to deep night. You choose the feeling."
+            "Moodpaper plays your photos throughout the day, changing with the rhythm you choose. Create a Vibe, add the wallpapers you love, and let Moodpaper take it from there."
         )
         XCTAssertEqual(OnboardingCopy.coverCta, "Begin")
     }
 
     func test_dialCopy_matchesSpec() {
         XCTAssertEqual(OnboardingCopy.dialEyebrow, "TURN THE DAY · 1 OF 2")
-        XCTAssertEqual(OnboardingCopy.dialTitle, "Drag the sun across your day.")
+        XCTAssertEqual(OnboardingCopy.dialTitle, "Your day has a rhythm")
         XCTAssertEqual(
             OnboardingCopy.dialBody,
-            "Every part of the day gets its own wallpaper. Drag to watch the light change."
+            "Moodpaper can change your wallpaper as the day moves from morning to night. Drag to watch the light change. Later, Shape My Day lets you choose what plays when."
         )
-        XCTAssertEqual(OnboardingCopy.dialLocationPrompt, "Time these to your actual sunrise?")
+        XCTAssertEqual(OnboardingCopy.dialLocationPrompt, "Time this to your actual sunrise?")
         XCTAssertEqual(OnboardingCopy.dialLocationCta, "Use My Location")
         XCTAssertEqual(OnboardingCopy.dialLocationSkip, "Not now")
         XCTAssertEqual(
@@ -30,27 +30,33 @@ final class OnboardingViewTests: XCTestCase {
     }
 
     func test_nameCopy_matchesSpec() {
-        XCTAssertEqual(OnboardingCopy.nameEyebrow, "MAKE IT REAL · 2 OF 2")
-        XCTAssertEqual(OnboardingCopy.nameTitle, "Name this feeling.")
+        XCTAssertEqual(OnboardingCopy.nameEyebrow, "START YOUR VIBE · 2 OF 2")
+        XCTAssertEqual(OnboardingCopy.nameTitle, "Name your first Vibe")
         XCTAssertEqual(
             OnboardingCopy.nameBody,
-            "Your first Vibe starts with the day you just shaped. Swap in your own photos anytime."
+            "A Vibe is a group of wallpapers with its own feeling and pace. We'll start you with a few so you can see Moodpaper in motion."
         )
-        XCTAssertEqual(OnboardingCopy.namePlaceholder, "Daybreak, Deep Focus, Cozy Weekend…")
-        XCTAssertEqual(OnboardingCopy.namePrefill, "Daybreak")
-        XCTAssertEqual(OnboardingCopy.namePrimaryCta, "Set My Desktop")
+        XCTAssertEqual(OnboardingCopy.namePlaceholder, "My Wallpapers")
+        XCTAssertEqual(OnboardingCopy.namePrefill, "My Wallpapers")
+        XCTAssertEqual(OnboardingCopy.namePrimaryCta, "Start My Vibe")
         XCTAssertEqual(OnboardingCopy.nameSecondaryCta, "I'll do this later")
     }
 
     func test_commitWaitCopy_matchesSpec() {
-        XCTAssertEqual(OnboardingCopy.nameCommittingLabel, "Setting your desktop…")
+        XCTAssertEqual(OnboardingCopy.nameCommittingLabel, "Starting your Vibe…")
         XCTAssertEqual(
             OnboardingCopy.nameCommitTimeout,
-            "This is taking longer than usual. Your Vibe is saved, so you can close this and it will apply when macOS catches up."
+            "This is taking longer than usual. Your Vibe is saved, so you can close this and playback will start when macOS catches up."
         )
     }
 
-    // MARK: - Set My Desktop wait
+    func test_newVibePlaceholder_isNotOnboardingPrefill() {
+        XCTAssertEqual(VibeNaming.namePlaceholder, "Daybreak, Deep Focus, Cozy Weekend…")
+        XCTAssertNotEqual(VibeNaming.namePlaceholder, OnboardingCopy.namePlaceholder)
+        XCTAssertNotEqual(VibeNaming.namePlaceholder, OnboardingCopy.namePrefill)
+    }
+
+    // MARK: - Start My Vibe wait
 
     func test_commitWait_nameChangeSucceedsImmediately() {
         XCTAssertEqual(
@@ -124,7 +130,22 @@ final class OnboardingViewTests: XCTestCase {
         ]
         for s in allStrings {
             XCTAssertFalse(s.contains("\u{2014}"), "String must not contain em dash: \(s)")
+            XCTAssertFalse(s.contains("All Day"), "Stale All Day wording: \(s)")
+            XCTAssertFalse(s.contains("Name this feeling"), "Stale naming copy: \(s)")
+            XCTAssertFalse(s.contains("Set My Desktop"), "Stale one-shot CTA: \(s)")
         }
+    }
+
+    func test_moodsViewDoesNotReuseOnboardingPlaceholder() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Moodpaper/MoodsView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(source.contains("OnboardingCopy.namePlaceholder"))
+        XCTAssertTrue(source.contains("VibeNaming.namePlaceholder"))
     }
 
     func test_currentTimeSlotIndex_mapsHoursOntoEngineSlots() {
