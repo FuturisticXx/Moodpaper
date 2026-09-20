@@ -507,7 +507,7 @@ struct MoodEditorSheet: View {
                 Text("Name (optional)")
                     .font(HorizonTypography.caption)
                     .foregroundColor(HorizonColors.textSecondary)
-                TextField(OnboardingCopy.namePlaceholder, text: $name)
+                TextField(VibeNaming.namePlaceholder, text: $name)
                     .textFieldStyle(.roundedBorder)
             }
 

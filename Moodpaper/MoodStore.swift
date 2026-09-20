@@ -255,7 +255,14 @@ final class MoodStore: ObservableObject {
             delete(created)
             return nil
         }
-        activate(created)
+        if activeMoodID == created.id {
+            // create() already activated the first Vibe before the starter
+            // photographs existed, so activate() would no-op. Request the
+            // refresh now that the Vibe is populated.
+            onActiveMoodChange?()
+        } else {
+            activate(created)
+        }
         return self.mood(id: created.id) ?? created
     }
 

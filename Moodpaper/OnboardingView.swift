@@ -7,8 +7,8 @@ internal import Combine
 ///
 /// The flow is three moments, not a feature tour: a living cover that
 /// demonstrates the product before any click, a day dial the user scrubs to
-/// watch the backdrop change mood, and a commit moment that changes the real
-/// desktop exactly once.
+/// watch the backdrop change mood, and a commit moment that starts the
+/// first Vibe playing.
 ///
 /// Every moment runs on the nine bundled photographs in
 /// `StarterWallpaperLibrary`, and those same nine files become the user's first
@@ -16,42 +16,84 @@ internal import Combine
 /// capability the app does not have.
 enum OnboardingCopy {
     static let coverEyebrow = "MOODPAPER"
-    static let coverTitle = "Your desktop has moods."
-    static let coverBody = "Wallpapers that drift through your day, from first light to deep night. You choose the feeling."
+    static let coverTitle = "Make your desktop feel alive"
+    static let coverBody = "Moodpaper plays your photos throughout the day, changing with the rhythm you choose. Create a Vibe, add the wallpapers you love, and let Moodpaper take it from there."
     static let coverCta = "Begin"
 
     static let dialEyebrow = "TURN THE DAY · 1 OF 2"
-    static let dialTitle = "Drag the sun across your day."
-    static let dialBody = "Every part of the day gets its own wallpaper. Drag to watch the light change."
-    static let dialLocationPrompt = "Time these to your actual sunrise?"
+    static let dialTitle = "Your day has a rhythm"
+    static let dialBody = "Moodpaper can change your wallpaper as the day moves from morning to night. Drag to watch the light change. Later, Shape My Day lets you choose what plays when."
+    static let dialLocationPrompt = "Time this to your actual sunrise?"
     static let dialLocationCta = "Use My Location"
     static let dialLocationSkip = "Not now"
     static let dialLocationGranted = "Timed to your sky."
     static let dialLocationFallback = "Using standard times. You can refine with location anytime in Settings."
     static let dialCta = "Continue"
 
-    static let nameEyebrow = "MAKE IT REAL · 2 OF 2"
-    static let nameTitle = "Name this feeling."
-    static let nameBody = "Your first Vibe starts with the day you just shaped. Swap in your own photos anytime."
-    static let namePlaceholder = "Daybreak, Deep Focus, Cozy Weekend…"
-    static let namePrefill = "Daybreak"
-    static let namePrimaryCta = "Set My Desktop"
+    static let nameEyebrow = "START YOUR VIBE · 2 OF 2"
+    static let nameTitle = "Name your first Vibe"
+    static let nameBody = "A Vibe is a group of wallpapers with its own feeling and pace. We'll start you with a few so you can see Moodpaper in motion."
+    static let namePlaceholder = "My Wallpapers"
+    static let namePrefill = "My Wallpapers"
+    static let namePrimaryCta = "Start My Vibe"
     static let nameSecondaryCta = "I'll do this later"
-    static let nameCommittingLabel = "Setting your desktop…"
-    static let nameCommitTimeout = "This is taking longer than usual. Your Vibe is saved, so you can close this and it will apply when macOS catches up."
+    static let nameCommittingLabel = "Starting your Vibe…"
+    static let nameCommitTimeout = "This is taking longer than usual. Your Vibe is saved, so you can close this and playback will start when macOS catches up."
 
     static let skipLink = "Skip"
     static let backLink = "Back"
 }
 
+/// Decides when the Start My Vibe wait is over. Pure so the contract can be
+/// tested without a real desktop, mirroring
+/// `WallpaperManager.desktopApplyConfirmationDecision`.
+///
+/// The engine already knows when an apply is finished: `isChangingWallpaper`
+/// flips true when it starts and back to false when it returns, and
+/// `currentWallpaperName` changes only once macOS confirmed the new image.
+/// Waiting on those two signals means onboarding stays open exactly as long
+/// as the engine is still working (up to its own 20 s confirmation budget)
+/// instead of racing it with a shorter deadline, which is how a change that
+/// macOS confirmed at 12.2 s used to show the "taking longer" fallback.
+enum OnboardingCommitWait {
+    enum Decision: Equatable {
+        case waiting
+        case succeeded
+        case failed
+    }
+
+    /// Only reached when the engine never starts an apply at all (no display,
+    /// nothing to apply). Sized to outlast the engine's 20 s confirmation
+    /// budget plus coalescing and poll slack, so it never fires on a slow but
+    /// healthy apply.
+    static let safetyValve: TimeInterval = 25
+
+    nonisolated static func decision(
+        nameChanged: Bool,
+        applyStarted: Bool,
+        applyInProgress: Bool,
+        elapsed: TimeInterval,
+        safetyValve: TimeInterval = OnboardingCommitWait.safetyValve
+    ) -> Decision {
+        if nameChanged { return .succeeded }
+        if applyStarted, !applyInProgress { return .failed }
+        if elapsed >= safetyValve { return .failed }
+        return .waiting
+    }
+}
+
 enum VibeNaming {
     static let suggestions = ["Calm", "Focused", "Dreamy", "Energized"]
+
+    /// Placeholder for the New Vibe / Edit Vibe field. Kept separate from
+    /// `OnboardingCopy.namePlaceholder` so first-run copy cannot leak here.
+    static let namePlaceholder = "Daybreak, Deep Focus, Cozy Weekend…"
 
     /// Keeps the prefilled name from colliding with a Vibe the user already
     /// has. `MoodStore.create` allows duplicate names on purpose (so does the
     /// New Vibe button), which is fine when the user typed the name and not
     /// fine when onboarding filled it in for them: replaying the welcome and
-    /// pressing the primary button would quietly mint a second "Daybreak".
+    /// pressing the primary button would quietly mint a second "My Wallpapers".
     nonisolated static func uniqueName(_ base: String, existing: [String]) -> String {
         guard existing.contains(base) else { return base }
         var suffix = 2
@@ -318,12 +360,15 @@ struct OnboardingView: View {
     /// wallpaper on screen, then lingers a beat so the change is watched
     /// rather than discovered. Preparing the image takes a few seconds, so a
     /// fixed delay closed the window before anything happened, which loses
-    /// the one moment the whole flow exists to deliver. The timeout keeps a
-    /// stalled engine from trapping the user in onboarding.
+    /// the one moment the whole flow exists to deliver. The wait follows the
+    /// engine's own apply state (see `OnboardingCommitWait`) so a slow macOS
+    /// confirmation is not mistaken for a stall; the safety valve only covers
+    /// an apply that never starts.
     private func waitForDesktopChange() {
         let manager = WallpaperManager.shared
         let before = manager.currentWallpaperName
-        let deadline = Date().addingTimeInterval(12)
+        let startedAt = Date()
+        var applyStarted = false
 
         func finish() {
             guard isCommitting else { return }
@@ -333,13 +378,18 @@ struct OnboardingView: View {
         }
 
         func poll() {
-            if manager.currentWallpaperName != before {
+            if manager.isChangingWallpaper { applyStarted = true }
+            switch OnboardingCommitWait.decision(
+                nameChanged: manager.currentWallpaperName != before,
+                applyStarted: applyStarted,
+                applyInProgress: manager.isChangingWallpaper,
+                elapsed: Date().timeIntervalSince(startedAt)
+            ) {
+            case .succeeded:
                 // Let the applied wallpaper sit on screen before the window
                 // fades, so the user sees it change and not just the result.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { finish() }
-                return
-            }
-            guard Date() < deadline else {
+            case .failed:
                 // Closing silently here was indistinguishable from success and
                 // left the user with an unchanged desktop and no explanation.
                 // Hold the window open, say what happened, and let them leave
@@ -348,9 +398,9 @@ struct OnboardingView: View {
                 guard isCommitting else { return }
                 isCommitting = false
                 commitTimedOut = true
-                return
+            case .waiting:
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { poll() }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { poll() }
         }
         poll()
     }
