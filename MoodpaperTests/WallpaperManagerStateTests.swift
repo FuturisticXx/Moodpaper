@@ -634,6 +634,76 @@ final class WallpaperManagerStateTests: XCTestCase {
 
     // MARK: - Launch preservation (launch churn fix)
 
+    func testNightToMorningBypassesDwellAndCommitsOnlyAfterConfirmedApply() {
+        let night = URL(fileURLWithPath: "/assets/night-only.jpg")
+        let morning = URL(fileURLWithPath: "/assets/morning-only.jpg")
+        var appliedSlot = "deep-night"
+        var history: [URL] = [night]
+
+        XCTAssertEqual(
+            WallpaperManager.slotTransitionPlan(
+                appliedSlot: appliedSlot,
+                resolvedSlot: "morning",
+                persistedWallpaperIsInResolvedPool: false,
+                resolvedPoolIsEmpty: false,
+                dwellIsActive: true
+            ),
+            .applyRequired
+        )
+
+        let outcome = SlotApplyRuntime(
+            setDesktopImages: { true },
+            confirmDesktopImages: { .confirmed }
+        ).apply()
+        WallpaperManager.commitSlotTransition(
+            outcome: outcome,
+            newSlot: "morning",
+            newAsset: morning,
+            appliedSlot: &appliedSlot,
+            history: &history
+        )
+
+        XCTAssertEqual(appliedSlot, "morning")
+        XCTAssertEqual(history.last, morning)
+    }
+
+    func testSetterFailureDoesNotAdvanceSlotOrRecordHistoryAndCanRetry() {
+        let night = URL(fileURLWithPath: "/assets/night-only.jpg")
+        let morning = URL(fileURLWithPath: "/assets/morning-only.jpg")
+        var appliedSlot = "deep-night"
+        var history: [URL] = [night]
+
+        let outcome = SlotApplyRuntime(
+            setDesktopImages: { false },
+            confirmDesktopImages: { XCTFail("confirmation must not run after setter failure"); return .confirmed }
+        ).apply()
+        WallpaperManager.commitSlotTransition(outcome: outcome, newSlot: "morning", newAsset: morning, appliedSlot: &appliedSlot, history: &history)
+
+        XCTAssertEqual(outcome, .setterFailed)
+        XCTAssertEqual(appliedSlot, "deep-night")
+        XCTAssertFalse(history.contains(morning))
+        XCTAssertTrue(WallpaperManager.slotTransitionPlan(appliedSlot: appliedSlot, resolvedSlot: "morning", persistedWallpaperIsInResolvedPool: false, resolvedPoolIsEmpty: false, dwellIsActive: true) == .applyRequired)
+    }
+
+    func testConfirmationTimeoutDoesNotAdvanceSlotOrRecordHistory() {
+        let night = URL(fileURLWithPath: "/assets/night-only.jpg")
+        let morning = URL(fileURLWithPath: "/assets/morning-only.jpg")
+        var appliedSlot = "deep-night"
+        var history: [URL] = [night]
+
+        let outcome = SlotApplyRuntime(setDesktopImages: { true }, confirmDesktopImages: { .timedOut }).apply()
+        WallpaperManager.commitSlotTransition(outcome: outcome, newSlot: "morning", newAsset: morning, appliedSlot: &appliedSlot, history: &history)
+
+        XCTAssertEqual(outcome, .confirmationTimedOut)
+        XCTAssertEqual(appliedSlot, "deep-night")
+        XCTAssertFalse(history.contains(morning))
+    }
+
+    func testWakeAndActivationRequireNewEffectiveSlotInsteadOfPreservingOldAsset() {
+        XCTAssertEqual(WallpaperManager.slotTransitionPlan(appliedSlot: "deep-night", resolvedSlot: "morning", persistedWallpaperIsInResolvedPool: false, resolvedPoolIsEmpty: false, dwellIsActive: true), .applyRequired)
+        XCTAssertEqual(WallpaperManager.slotTransitionPlan(appliedSlot: "morning", resolvedSlot: "midday", persistedWallpaperIsInResolvedPool: false, resolvedPoolIsEmpty: false, dwellIsActive: true), .applyRequired)
+    }
+
     // A relaunch inside the dwell window with a slot-correct persisted
     // wallpaper must NOT rotate — the desktop already shows the right thing.
     func testLaunchPreservesPersistedWallpaperInsideDwellAndMatchingSlot() {

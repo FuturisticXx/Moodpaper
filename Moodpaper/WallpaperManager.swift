@@ -73,6 +73,25 @@ enum DesktopApplyConfirmationDecision: Equatable {
     case timedOut
 }
 
+enum SlotApplyOutcome: Equatable {
+    case setterFailed
+    case confirmationTimedOut
+    case confirmed
+}
+
+/// The narrow runtime seam between an attempted desktop apply and committing
+/// slot/history state. Production supplies AppKit setter plus confirmation;
+/// tests supply deterministic closures for the same two stages.
+struct SlotApplyRuntime {
+    var setDesktopImages: () -> Bool
+    var confirmDesktopImages: () -> DesktopApplyConfirmationDecision
+
+    func apply() -> SlotApplyOutcome {
+        guard setDesktopImages() else { return .setterFailed }
+        return confirmDesktopImages() == .confirmed ? .confirmed : .confirmationTimedOut
+    }
+}
+
 nonisolated fileprivate struct SendableScreen: @unchecked Sendable {
     let value: NSScreen
 }
@@ -218,6 +237,7 @@ class WallpaperManager: ObservableObject {
     // (handles independent displays correctly).
     private var desiredURLPerScreen: [String: URL] = [:]
     private var lastSlot: String = ""
+    private let lastAppliedSlotKey = "wallpaper.lastAppliedSlot"
     private var lastWallpaperChangeAt: Date?
     private let historyKey = "wallpaperHistory"
     private let displayModesKey = "schedule.displayModes"
@@ -353,6 +373,7 @@ class WallpaperManager: ObservableObject {
         loadHistory()
         loadDisplayModes()
         loadLastWallpaperChangeDate()
+        loadLastAppliedSlot()
         reconcileCurrentWallpaperState()
         refreshPreparedWallpaperStateIfNeeded()
         validateStateInvariants(context: "init")
@@ -435,6 +456,15 @@ class WallpaperManager: ObservableObject {
         if let storedDate = UserDefaults.standard.object(forKey: lastWallpaperChangeAtKey) as? Date {
             lastWallpaperChangeAt = storedDate
         }
+    }
+
+    private func loadLastAppliedSlot() {
+        lastSlot = UserDefaults.standard.string(forKey: lastAppliedSlotKey) ?? ""
+    }
+
+    private func commitAppliedSlot(_ slot: String) {
+        lastSlot = slot
+        UserDefaults.standard.set(slot, forKey: lastAppliedSlotKey)
     }
 
     private func saveLastWallpaperChangeDate() {
@@ -779,10 +809,6 @@ class WallpaperManager: ObservableObject {
             return
         }
 
-        let slotChanged = resolvedSlot != lastSlot && !lastSlot.isEmpty
-        // Treat empty lastSlot as a slot change to recover from reset states
-        let needsInitialSet = lastSlot.isEmpty
-
         // Dwell interval is needed both by the launch-preservation check and
         // the rotation gate below; compute it once. Derives from the active
         // Vibe's How Often (falling back to the Settings default). See dwellSeconds().
@@ -797,7 +823,16 @@ class WallpaperManager: ObservableObject {
         // A persisted identifier the store cannot resolve (for example a
         // Catalog asset path while the store is on the legacy model) is not
         // a wallpaper to preserve; normal selection runs instead.
-        let preservePersistedAtLaunch = needsInitialSet && Self.shouldPreservePersistedWallpaperAtLaunch(
+        let appliedSlot = lastSlot.isEmpty ? nil : lastSlot
+        let persistedIsInResolvedPool = persistedWallpapersAreInEffectivePool(for: resolvedSlot)
+        let transitionPlan = Self.slotTransitionPlan(
+            appliedSlot: appliedSlot,
+            resolvedSlot: resolvedSlot,
+            persistedWallpaperIsInResolvedPool: persistedIsInResolvedPool,
+            resolvedPoolIsEmpty: effectiveWallpaperPool(for: resolvedSlot).isEmpty,
+            dwellIsActive: lastWallpaperChangeAt.map { Date().timeIntervalSince($0) < minimumInterval } ?? false
+        )
+        let preservePersistedAtLaunch = transitionPlan == .preserveCurrent && Self.shouldPreservePersistedWallpaperAtLaunch(
             hasPersistedWallpaper: persistedIdentifier.flatMap { wallpaperURL(for: $0) } != nil,
             persistedWallpaperSlot: nil,
             resolvedSlot: resolvedSlot,
@@ -805,7 +840,7 @@ class WallpaperManager: ObservableObject {
             minimumInterval: minimumInterval
         )
         if preservePersistedAtLaunch {
-            lastSlot = resolvedSlot
+            commitAppliedSlot(resolvedSlot)
             HorizonDebugLog.shared.log("schedule.launchPreserve", fields: [
                 "persisted": persistedIdentifier ?? "none",
                 "slot": resolvedSlot
@@ -814,20 +849,20 @@ class WallpaperManager: ObservableObject {
 
         // Entering a new time slot: switch immediately, ignoring the
         // frequency interval.
-        if (slotChanged || needsInitialSet) && !preservePersistedAtLaunch {
-            if slotChanged {
+        if transitionPlan == .applyRequired && !preservePersistedAtLaunch {
+            if appliedSlot != nil && appliedSlot != resolvedSlot {
                 sendSlotChangeNotification(for: resolvedSlot)
             }
-            lastSlot = resolvedSlot
-            pendingHistorySlot = resolvedSlot  // HZN-006: recorded in setWallpaper on success
-            withApplyTrigger("scheduledTick") {
-                if focusMeetingActive {
-                    setFocusWallpaper(fallbackSlot: resolvedSlot)
-                } else {
-                    setWallpaperForSlot(resolvedSlot)
-                }
-            }
+            applySlotTransition(resolvedSlot, focusMeetingActive: focusMeetingActive)
             return
+        }
+
+        if transitionPlan == .holdEmptyPool {
+            // Existing empty-pool behavior holds the desktop, but the resolved
+            // slot is still safe bookkeeping because no replacement exists.
+            commitAppliedSlot(resolvedSlot)
+        } else if transitionPlan == .noTransition {
+            commitAppliedSlot(resolvedSlot)
         }
 
         let now = Date()
@@ -840,13 +875,21 @@ class WallpaperManager: ObservableObject {
 
         guard shouldRotate else { return }
 
-        lastSlot = resolvedSlot
-        pendingHistorySlot = resolvedSlot  // HZN-006: recorded in setWallpaper on success
+        applySlotTransition(resolvedSlot, focusMeetingActive: focusMeetingActive)
+    }
+
+    private func applySlotTransition(_ resolvedSlot: String, focusMeetingActive: Bool) {
+        pendingHistorySlot = resolvedSlot
+        let succeeded: () -> Void = { [weak self] in self?.commitAppliedSlot(resolvedSlot) }
+        let failed = { [weak self] in
+            guard self?.pendingHistorySlot == resolvedSlot else { return }
+            self?.pendingHistorySlot = ""
+        }
         withApplyTrigger("scheduledTick") {
             if focusMeetingActive {
-                setFocusWallpaper(fallbackSlot: resolvedSlot)
+                setFocusWallpaper(fallbackSlot: resolvedSlot, onApplied: succeeded, onFailed: failed)
             } else {
-                setWallpaperForSlot(resolvedSlot)
+                setWallpaperForSlot(resolvedSlot, onApplied: succeeded, onFailed: failed)
             }
         }
     }
@@ -1147,7 +1190,7 @@ class WallpaperManager: ObservableObject {
         nextChangeCountdown = value
     }
 
-    func setWallpaperForSlot(_ slot: String) {
+    func setWallpaperForSlot(_ slot: String, onApplied: @escaping () -> Void = {}, onFailed: @escaping () -> Void = {}) {
         activeSlot = slot  // HZN-003: captured by setWallpaper(url:) for independent display mode
 
         // Selection reads the active Mood's slot-specific pool first, then
@@ -1158,9 +1201,10 @@ class WallpaperManager: ObservableObject {
             // has images comes around. Never an error — an empty slot is a
             // normal state for a mood the user is still filling in.
             print("Horizon: Mood slot \(slot) has no images. Holding current wallpaper.")
+            onFailed()
             return
         }
-        setWallpaper(url: url)
+        setWallpaper(url: url, onApplied: onApplied, onFailed: onFailed)
     }
 
     /// Random pick from the active Mood's effective pool for `slot`, or nil
@@ -1175,6 +1219,27 @@ class WallpaperManager: ObservableObject {
         case .holdCurrent: return nil
         case .moodPool:    return resolveWallpaperURL(from: pool)
         }
+    }
+
+    private func effectiveWallpaperPool(for slot: String) -> [URL] {
+        MoodStore.shared.activeMood.map {
+            MoodStore.shared.effectiveWallpapers(for: timeSlotFromString(slot), in: $0)
+        } ?? []
+    }
+
+    private func persistedWallpapersAreInEffectivePool(for slot: String) -> Bool {
+        let valid = Set(effectiveWallpaperPool(for: slot).map(identifier(for:)))
+        let activeScreenNames = Set(
+            NSScreen.screens
+                .filter { mode(for: $0.localizedName) != .off }
+                .map(\.localizedName)
+        )
+        return Self.persistedWallpapersAreValidForSlot(
+            persistedIdentifiersByScreen: currentWallpaperIdentifiersByScreen(),
+            activeScreenNames: activeScreenNames,
+            fallbackPrimaryIdentifier: currentWallpaperIdentifier(),
+            validIdentifiers: valid
+        )
     }
 
     // MARK: - Focus wallpapers
@@ -1205,18 +1270,18 @@ class WallpaperManager: ObservableObject {
 
     /// Applies a Focus wallpaper. `fallbackSlot` is the already-resolved
     /// Focus slot used when no explicit asset applies.
-    func setFocusWallpaper(fallbackSlot: String) {
+    func setFocusWallpaper(fallbackSlot: String, onApplied: @escaping () -> Void = {}, onFailed: @escaping () -> Void = {}) {
         switch focusWallpaperCandidates(fallbackSlot: fallbackSlot) {
         case .slot(let slot):
-            setWallpaperForSlot(slot)
+            setWallpaperForSlot(slot, onApplied: onApplied, onFailed: onFailed)
         case .explicitAssets(let urls):
             activeSlot = fallbackSlot
-            guard let url = urls.randomElement() else { return }
+            guard let url = urls.randomElement() else { onFailed(); return }
             // Independent displays draw from the same Focus set while this
             // apply snapshots its per-screen sources (synchronously).
             activeFocusCandidateURLs = urls
             defer { activeFocusCandidateURLs = [] }
-            setWallpaper(url: url)
+            setWallpaper(url: url, onApplied: onApplied, onFailed: onFailed)
         }
     }
 
@@ -1351,7 +1416,7 @@ class WallpaperManager: ObservableObject {
         objectWillChange.send()
     }
 
-    func setWallpaper(url: URL) {
+    func setWallpaper(url: URL, onApplied: @escaping () -> Void = {}, onFailed: @escaping () -> Void = {}) {
         // Re-entrancy guard: under the previous synchronous applyWallpapers,
         // rapid repeated calls (Skip-spamming) serialized through main and
         // were naturally ordered. With the apply now async, two overlapping
@@ -1360,6 +1425,7 @@ class WallpaperManager: ObservableObject {
         // doesn't want machine-gun wallpaper changes anyway.
         guard !isChangingWallpaper else {
             print("[WallpaperManager] Wallpaper change already in progress; skipping duplicate request")
+            onFailed()
             return
         }
 
@@ -1376,6 +1442,7 @@ class WallpaperManager: ObservableObject {
             print("Horizon: \(errorMsg)")
             self.lastError = errorMsg
             self.isChangingWallpaper = false
+            onFailed()
             return
         }
 
@@ -1413,7 +1480,7 @@ class WallpaperManager: ObservableObject {
             )
             self.isChangingWallpaper = false
 
-            guard applied else { return }
+            guard applied else { onFailed(); return }
 
             var identifiersByScreen: [String: String] = [:]
             for (screenName, sourceURL) in sourceURLsByScreen {
@@ -1428,6 +1495,7 @@ class WallpaperManager: ObservableObject {
                 primaryIdentifier: primaryIdentifier,
                 identifiersByScreen: identifiersByScreen
             )
+            onApplied()
             self.validateStateInvariants(context: "setWallpaper")
             // HZN-006: Record history and timestamp only after confirmed successful change
             self.lastWallpaperChangeAt = Date()
@@ -2409,6 +2477,7 @@ extension WallpaperManager {
         print("[WallpaperManager] Reconciling runtime state (\(reason))")
         reconcileCurrentWallpaperState()
         validateStateInvariants(context: "runtimeReconcile:\(reason)")
+        checkAndUpdateWallpaper()
     }
 
     static func wallpaperStateMatches(
@@ -2444,6 +2513,51 @@ extension WallpaperManager {
 
     static func resolveWallpaperSource(moodPoolIsEmpty: Bool) -> WallpaperSourceDecision {
         moodPoolIsEmpty ? .holdCurrent : .moodPool
+    }
+
+    enum SlotTransitionPlan: Equatable {
+        case noTransition
+        case preserveCurrent
+        case applyRequired
+        case holdEmptyPool
+    }
+
+    static func slotTransitionPlan(
+        appliedSlot: String?,
+        resolvedSlot: String,
+        persistedWallpaperIsInResolvedPool: Bool,
+        resolvedPoolIsEmpty: Bool,
+        dwellIsActive: Bool
+    ) -> SlotTransitionPlan {
+        if resolvedPoolIsEmpty { return .holdEmptyPool }
+        if appliedSlot == resolvedSlot && persistedWallpaperIsInResolvedPool { return .noTransition }
+        if appliedSlot == nil && persistedWallpaperIsInResolvedPool && dwellIsActive { return .preserveCurrent }
+        return .applyRequired
+    }
+
+    static func commitSlotTransition(
+        outcome: SlotApplyOutcome,
+        newSlot: String,
+        newAsset: URL,
+        appliedSlot: inout String,
+        history: inout [URL]
+    ) {
+        guard outcome == .confirmed else { return }
+        appliedSlot = newSlot
+        history.append(newAsset)
+    }
+
+    static func persistedWallpapersAreValidForSlot(
+        persistedIdentifiersByScreen: [String: String],
+        activeScreenNames: Set<String>,
+        fallbackPrimaryIdentifier: String?,
+        validIdentifiers: Set<String>
+    ) -> Bool {
+        guard !validIdentifiers.isEmpty, !activeScreenNames.isEmpty else { return false }
+        return activeScreenNames.allSatisfy { screenName in
+            let identifier = persistedIdentifiersByScreen[screenName] ?? fallbackPrimaryIdentifier
+            return identifier.map(validIdentifiers.contains) ?? false
+        }
     }
 
     static func shouldSkipWallpaperUpdateForDND(
