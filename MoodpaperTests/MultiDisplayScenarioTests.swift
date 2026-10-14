@@ -2,6 +2,55 @@ import XCTest
 @testable import Moodpaper
 
 final class MultiDisplayScenarioTests: XCTestCase {
+    func testCurrentPoolPreservationRejectsStaleBenQWallpaper() {
+        XCTAssertFalse(
+            WallpaperManager.persistedWallpapersAreValidForSlot(
+                persistedIdentifiersByScreen: [
+                    "Built-in Display": "/assets/morning-built-in.jpg",
+                    "BenQ EX2780Q, Display 3": "/assets/night-benq.jpg"
+                ],
+                activeScreenNames: ["Built-in Display", "BenQ EX2780Q, Display 3"],
+                fallbackPrimaryIdentifier: "/assets/morning-built-in.jpg",
+                validIdentifiers: ["/assets/morning-built-in.jpg", "/assets/morning-benq.jpg"]
+            )
+        )
+    }
+
+    func testBenQStaleConfirmationPreventsCommitUntilEveryDisplaySucceeds() {
+        let expected = [
+            "Built-in Display": URL(fileURLWithPath: "/assets/morning-built-in.jpg"),
+            "BenQ EX2780Q, Display 3": URL(fileURLWithPath: "/assets/morning-benq.jpg")
+        ]
+        let stale = [
+            "Built-in Display": expected["Built-in Display"]!,
+            "BenQ EX2780Q, Display 3": URL(fileURLWithPath: "/assets/night-benq.jpg")
+        ]
+        var appliedSlot = "deep-night"
+        var history: [URL] = []
+        let morning = expected["Built-in Display"]!
+
+        let partialOutcome = SlotApplyRuntime(
+            setDesktopImages: { true },
+            confirmDesktopImages: {
+                WallpaperManager.desktopApplyConfirmationDecision(expectedURLsByScreen: expected, liveURLsByScreen: stale, elapsed: 20, timeout: 20)
+            }
+        ).apply()
+        WallpaperManager.commitSlotTransition(outcome: partialOutcome, newSlot: "morning", newAsset: morning, appliedSlot: &appliedSlot, history: &history)
+        XCTAssertEqual(partialOutcome, .confirmationTimedOut)
+        XCTAssertEqual(appliedSlot, "deep-night")
+        XCTAssertTrue(history.isEmpty)
+
+        let successOutcome = SlotApplyRuntime(
+            setDesktopImages: { true },
+            confirmDesktopImages: {
+                WallpaperManager.desktopApplyConfirmationDecision(expectedURLsByScreen: expected, liveURLsByScreen: expected, elapsed: 1, timeout: 20)
+            }
+        ).apply()
+        WallpaperManager.commitSlotTransition(outcome: successOutcome, newSlot: "morning", newAsset: morning, appliedSlot: &appliedSlot, history: &history)
+        XCTAssertEqual(successOutcome, .confirmed)
+        XCTAssertEqual(appliedSlot, "morning")
+        XCTAssertEqual(history, [morning])
+    }
     func testAllDisplayModesAreOffered() {
         XCTAssertEqual(DisplayMode.availableCases(), [.synchronized, .independent, .off])
     }

@@ -280,7 +280,9 @@ final class FocusAssetSelectionTests: XCTestCase {
 
         // Every meeting-time apply in the engine uses the same entry point,
         // and the entry point is the only reader of the candidate resolution.
-        XCTAssertEqual(manager.components(separatedBy: "setFocusWallpaper(fallbackSlot: resolvedSlot)").count - 1, 3)
+        // Scheduler transition paths now share applySlotTransition, so there
+        // are two consumers: scheduled playback and manual Skip.
+        XCTAssertEqual(manager.components(separatedBy: "setFocusWallpaper(fallbackSlot: resolvedSlot").count - 1, 2)
         XCTAssertEqual(manager.components(separatedBy: "focusWallpaperCandidates(fallbackSlot:").count - 1, 2,
                        "declaration plus its single use in setFocusWallpaper")
         XCTAssertFalse(manager.contains("ignoreMood"), "the unread parameter is gone")
