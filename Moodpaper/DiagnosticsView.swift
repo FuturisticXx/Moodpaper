@@ -184,20 +184,17 @@ struct DiagnosticsView: View {
         }
 
         let persistedIdentifiers = await MainActor.run { wallpaperManager.currentWallpaperIdentifiersByScreen() }
-        let activeDisplayNames = await MainActor.run {
-            NSScreen.screens
-                .filter { wallpaperManager.mode(for: $0.localizedName) != .off }
-                .map(\.localizedName)
+        let (persistedCount, activeDisplayCount) = await MainActor.run { () -> (Int, Int) in
+            let activeScreens = NSScreen.screens.filter { wallpaperManager.mode(for: $0) != .off }
+            let tracked = activeScreens.filter { wallpaperManager.trackedWallpaperIdentifier(for: $0) != nil }.count
+            return (tracked, activeScreens.count)
         }
-        let persistedCount = persistedIdentifiers.keys.filter { screenName in
-            activeDisplayNames.contains(screenName)
-        }.count
         results.append(DiagResult(
             name: "Per-display wallpaper state",
-            status: persistedCount >= max(activeDisplayNames.count, 1) ? .pass : .warn,
+            status: persistedCount >= max(activeDisplayCount, 1) ? .pass : .warn,
             detail: persistedIdentifiers.isEmpty
                 ? "No per-display wallpaper state persisted yet"
-                : "\(persistedCount) of \(activeDisplayNames.count) active displays tracked"
+                : "\(persistedCount) of \(activeDisplayCount) active displays tracked"
         ))
 
         return results

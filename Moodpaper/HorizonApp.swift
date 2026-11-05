@@ -160,7 +160,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Migrations
 
     struct UserDefaultsMigration {
-        static let currentVersion = 3
+        static let currentVersion = 4
+        static let spacePinsKey = "schedule.spacePins"
 
         static func migrateIfNeeded() {
             let defaults = UserDefaults.standard
@@ -197,6 +198,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     screenNames: NSScreen.screens.map(\.localizedName)
                 )
             }
+
+            // Visit-ordinal Space pins are not durable Mission Control IDs.
+            // The settings card is gone; drop leftover pin data on upgrade.
+            if oldVersion < 4 {
+                clearVisitOrdinalSpacePins(defaults: defaults)
+            }
+        }
+
+        static func clearVisitOrdinalSpacePins(defaults: UserDefaults) {
+            defaults.removeObject(forKey: spacePinsKey)
         }
 
         static func seedPerDisplayWallpaperIdentifiers(defaults: UserDefaults, screenNames: [String]) {
